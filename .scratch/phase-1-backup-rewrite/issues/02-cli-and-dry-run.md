@@ -4,10 +4,14 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `--mod` and `--prefix` are required; missing either is a non-zero exit with usage text
-- [ ] There is no interactive `input()` fallback
-- [ ] A real run still overwrites `Localization/en-us.cfg`, `zh-cn.cfg`, and `translation.csv` under the mod
-- [ ] `--dry-run` prints PART count and pending keys to stdout
-- [ ] `--dry-run` does not change original CFGs, does not write Localization files, and does not create or modify `data/`
+- [x] `--mod` and `--prefix` are required; missing either is a non-zero exit with usage text
+- [x] There is no interactive `input()` fallback
+- [x] A real run still overwrites `Localization/en-us.cfg`, `zh-cn.cfg`, and `translation.csv` under the mod
+- [x] `--dry-run` prints PART count and pending keys to stdout
+- [x] `--dry-run` does not change original CFGs, does not write Localization files, and does not create or modify `data/`
+
+## Answer
+
+CLI is argparse `--mod` / `--prefix` / `--dry-run`; `main` calls `run(mod, prefix, dry_run, tool_root=None)`. No `input()`. Tests in `tests/test_cli.py`: missing-args subprocess, `run()` real vs dry-run (temp `tool_root`), `--dry-run` accepted. `python -m unittest discover -s tests` green. Backup, rewrite, skip, and logs remain tickets 03–05.

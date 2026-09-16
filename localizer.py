@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
 import re
 from pathlib import Path
@@ -212,36 +213,50 @@ def write_localization(parts, out_dir, prefix):
         writer.writerows(csv_rows)
 
 
-def main():
-
-    mod_dir = input(
-        "Mod folder path: "
-    ).strip()
-
-    prefix = input(
-        "LOC Prefix (e.g. MYMOD): "
-    ).strip()
-
-    parts = scan_mod(mod_dir)
-
-    print(
-        f"Found {len(parts)} PARTs"
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="localizer.py",
+        description="Scan a KSP mod and write Localization files.",
     )
-
-    loc_dir = (
-        Path(mod_dir)
-        / "Localization"
+    parser.add_argument("--mod", required=True, help="Mod root directory")
+    parser.add_argument("--prefix", required=True, help="LOC key prefix")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview pending keys; write nothing",
     )
+    return parser.parse_args(argv)
 
-    write_localization(
-        parts,
-        loc_dir,
-        prefix
-    )
 
-    print(
-        f"Generated: {loc_dir}"
-    )
+def run(mod, prefix, dry_run=False, tool_root=None):
+    # ponytail: unused until ticket 04/05 backup+logs; keep so tests can inject it
+    if tool_root is None:
+        tool_root = Path(__file__).resolve().parent
+
+    parts = scan_mod(mod)
+
+    print(f"Found {len(parts)} PARTs")
+
+    keys = []
+    for part in parts:
+        for field in part.fields:
+            keys.append(build_loc_key(prefix, part.name, field))
+    if keys:
+        print("Keys:")
+        for key in keys:
+            print(key)
+
+    if dry_run:
+        return
+
+    loc_dir = Path(mod) / "Localization"
+    write_localization(parts, loc_dir, prefix)
+    print(f"Generated: {loc_dir}")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    run(args.mod, args.prefix, args.dry_run)
 
 
 if __name__ == "__main__":
