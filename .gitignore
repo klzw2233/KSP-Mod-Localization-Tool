@@ -1,0 +1,14 @@
+# Tool runtime data (backups, logs, mapping)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+.env
+
+# Rewrite leftovers
+*.cfg.tmp

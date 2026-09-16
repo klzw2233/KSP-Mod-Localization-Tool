@@ -1,0 +1,2023 @@
+# KSP Mod Localization Tool
+
+一个用于自动扫描 **Kerbal Space Program（KSP1）Mod**、提取可本地化文本、生成 KSP Localization 文件，并通过 **OpenAI Compatible API** 辅助完成简体中文翻译的 Python 工具。
+
+项目目标不是简单的“批量替换字符串”，而是逐步构建一个：
+
+> **安全、可回滚、可审计、可增量运行、支持 AI 翻译、适用于大型 KSP Mod 的本地化工具。**
+
+---
+
+# 1. 项目目标
+
+KSP Mod 通常包含大量 `.cfg` 文件，其中存在：
+
+```text
+PART
+RESOURCE_DEFINITION
+SUBTYPE
+VARIANT
+EXPERIMENT
+STRATEGY
+...
+```
+
+等 ConfigNode。
+
+这些节点中包含大量面向玩家显示的英文文本，例如：
+
+```cfg
+PART
+{
+    name = exampleEngine
+
+    title = Example Engine
+    manufacturer = Example Industries
+    description = A powerful liquid fuel engine.
+    tags = engine rocket liquid
+}
+```
+
+本工具负责将这些文本转换为 KSP Localization 格式：
+
+```cfg
+Localization
+{
+    en-us
+    {
+        #LOC_EXAMPLE_exampleEngine_title = Example Engine
+        #LOC_EXAMPLE_exampleEngine_manufacturer = Example Industries
+        #LOC_EXAMPLE_exampleEngine_description = A powerful liquid fuel engine.
+        #LOC_EXAMPLE_exampleEngine_tags = engine rocket liquid
+    }
+}
+```
+
+同时修改原始 CFG：
+
+```cfg
+title = #LOC_EXAMPLE_exampleEngine_title
+```
+
+然后通过 AI 将英文 Localization 翻译为：
+
+```cfg
+Localization
+{
+    zh-cn
+    {
+        #LOC_EXAMPLE_exampleEngine_title = 示例发动机
+        #LOC_EXAMPLE_exampleEngine_manufacturer = 示例工业
+        #LOC_EXAMPLE_exampleEngine_description = 一台强力的液体燃料发动机。
+        #LOC_EXAMPLE_exampleEngine_tags = 发动机 火箭 液体
+    }
+}
+```
+
+---
+
+# 2. 当前状态
+
+## 第一版：已完成并测试通过
+
+当前已经实现并验证：
+
+* 递归扫描指定 Mod 文件夹
+* 扫描所有 `.cfg`
+* 识别 `PART`
+* 正确处理嵌套 ConfigNode
+* 只提取 PART 第一层字段
+* 提取：
+
+  * `title`
+  * `description`
+  * `manufacturer`
+  * `tags`
+* 生成：
+
+  * `Localization/en-us.cfg`
+  * `Localization/zh-cn.cfg`
+  * `Localization/translation.csv`
+* 不修改原始 CFG
+
+第一版测试没有发现问题。
+
+---
+
+# 3. 第二版开发目标
+
+第二版需要在第一版基础上加入：
+
+## 核心功能
+
+1. OpenAI Compatible API
+2. AI 自动翻译
+3. 原始 CFG 自动备份
+4. 修改原始 CFG 中的本地化字段
+5. 生成 Localization 文件
+6. 完整日志
+7. 错误恢复
+8. Dry Run
+9. 翻译缓存
+
+---
+
+# 4. 安全原则
+
+这是本项目最重要的设计原则。
+
+工具会直接修改 KSP Mod 文件，因此：
+
+> **任何修改原文件的操作都必须可以追踪、恢复和验证。**
+
+## 4.1 永远先备份
+
+修改：
+
+```text
+engine.cfg
+```
+
+之前必须创建：
+
+```text
+engine.cfg.bak
+```
+
+例如：
+
+```text
+Parts/
+├── engine.cfg
+└── engine.cfg.bak
+```
+
+备份应该使用 Python 的：
+
+```python
+shutil.copy2()
+```
+
+尽量保留：
+
+* 文件内容
+* 文件时间戳
+* 文件权限信息
+
+---
+
+# 5. Backup 策略
+
+需要避免反复运行产生：
+
+```text
+engine.cfg.bak
+engine.cfg.bak.bak
+engine.cfg.bak.bak.bak
+```
+
+默认策略：
+
+```text
+原文件：
+engine.cfg
+
+首次运行：
+engine.cfg.bak
+
+再次运行：
+不要覆盖已有 .bak
+```
+
+因为 `.bak` 应代表：
+
+> **第一次修改之前的原始文件。**
+
+未来可以增加：
+
+```text
+--force-backup
+```
+
+允许显式创建新的备份。
+
+也可以未来支持：
+
+```text
+backup/
+    20260916_215400/
+        engine.cfg
+        tank.cfg
+```
+
+但当前版本优先保持简单。
+
+---
+
+# 6. 修改原始 CFG
+
+原始：
+
+```cfg
+PART
+{
+    name = exampleEngine
+
+    title = Example Engine
+    description = Powerful engine.
+}
+```
+
+修改：
+
+```cfg
+PART
+{
+    name = exampleEngine
+
+    title = #LOC_EXAMPLE_exampleEngine_title
+    description = #LOC_EXAMPLE_exampleEngine_description
+}
+```
+
+必须保留：
+
+* 缩进
+* 换行
+* 其他字段
+* ConfigNode 结构
+* 注释
+* 文件编码
+
+尽量只修改目标字段的 value。
+
+---
+
+# 7. 已本地化字段必须跳过
+
+如果原文件已经是：
+
+```cfg
+title = #LOC_EXAMPLE_ENGINE_TITLE
+```
+
+则不能再次生成：
+
+```cfg
+title = #LOC_EXAMPLE_exampleEngine_title
+```
+
+检测：
+
+```python
+value.startswith("#LOC_")
+```
+
+即可作为第一层判断。
+
+未来可以增加更加严格的 Localization Key 检测。
+
+---
+
+# 8. 当前安全字段
+
+第一版只处理：
+
+```text
+PART
+ ├── title
+ ├── description
+ ├── manufacturer
+ └── tags
+```
+
+不要因为发现：
+
+```cfg
+MODULE
+{
+    title = Something
+}
+```
+
+就自动提取。
+
+原因是 KSP Mod 中很多 `name`、`title` 等字段实际上可能参与模块逻辑，而不是玩家显示文本。
+
+例如：
+
+```cfg
+MODULE
+{
+    name = ModuleSomething
+    title = Something
+}
+```
+
+不能假定 `title` 一定安全。
+
+---
+
+# 9. ConfigNode 解析
+
+第一版使用简单的文本扫描 + 大括号深度。
+
+当前逻辑能够正确处理：
+
+```cfg
+PART
+{
+    name = example
+
+    title = Example
+
+    MODULE
+    {
+        title = Do Not Extract
+    }
+}
+```
+
+只提取：
+
+```text
+PART.title
+```
+
+不提取：
+
+```text
+PART.MODULE.title
+```
+
+---
+
+# 10. 长期解析方案
+
+随着项目支持更多 Mod，应该逐渐从：
+
+```text
+正则表达式 / 文本扫描
+```
+
+升级为：
+
+```text
+真正的 KSP ConfigNode Parser
+```
+
+原因：
+
+KSP CFG 并不是普通 INI。
+
+需要正确处理：
+
+* 嵌套 Node
+* 重复字段
+* 注释
+* 引号
+* 特殊字符
+* 多行内容
+* Unicode
+* 文件编码
+* 条件节点
+* ConfigNode 特有格式
+
+原则：
+
+> 不要为了支持更多字段而无限增加正则表达式。
+
+---
+
+# 11. Localization Key 设计
+
+默认格式：
+
+```text
+#LOC_<PREFIX>_<IDENTIFIER>_<FIELD>
+```
+
+例如：
+
+```text
+#LOC_BDB_fooEngine_title
+#LOC_BDB_fooEngine_description
+#LOC_BDB_fooEngine_manufacturer
+```
+
+其中：
+
+```text
+PREFIX
+```
+
+由用户指定，例如：
+
+```text
+BDB
+RESTOCK
+NFM
+MYMOD
+```
+
+---
+
+# 12. Key 唯一性
+
+必须确保不同字符串不会生成相同 Key。
+
+例如：
+
+```text
+PART:
+    name = engineA
+
+PART:
+    name = engineB
+```
+
+应该得到：
+
+```text
+#LOC_MYMOD_engineA_title
+#LOC_MYMOD_engineB_title
+```
+
+如果发现重复：
+
+```text
+#LOC_MYMOD_engineA_title
+```
+
+不能静默覆盖。
+
+必须：
+
+1. 记录 WARNING
+2. 保留冲突信息
+3. 尽可能生成稳定的备用 Key
+4. 日志中明确说明
+
+---
+
+# 13. OpenAI Compatible API
+
+AI 翻译层不能绑定某一家 AI 服务。
+
+使用 OpenAI Compatible API。
+
+Python SDK：
+
+```python
+from openai import OpenAI
+```
+
+配置：
+
+```json
+{
+    "base_url": "http://127.0.0.1:8317/v1",
+    "api_key": "sk-xxxx",
+    "model": "model-name",
+    "batch_size": 50,
+    "temperature": 0.1
+}
+```
+
+这样可以支持：
+
+* OpenAI
+* LiteLLM
+* Grok2API
+* cliproxyapi
+* New API
+* One API
+* 其他 OpenAI Compatible 服务
+
+---
+
+# 14. AI 配置文件
+
+建议：
+
+```text
+translator.json
+```
+
+例如：
+
+```json
+{
+    "base_url": "http://127.0.0.1:8317/v1",
+    "api_key": "sk-xxxx",
+    "model": "model-name",
+    "batch_size": 50,
+    "temperature": 0.1
+}
+```
+
+不要把 API Key 硬编码到 Python 源码。
+
+未来优先支持环境变量：
+
+```text
+OPENAI_API_KEY
+OPENAI_BASE_URL
+OPENAI_MODEL
+```
+
+配置优先级建议：
+
+```text
+CLI 参数
+    ↓
+环境变量
+    ↓
+translator.json
+    ↓
+默认值
+```
+
+---
+
+# 15. AI 翻译批处理
+
+不能：
+
+```text
+一条文本 = 一次 API 请求
+```
+
+大型 Mod 会产生大量请求。
+
+应该批量：
+
+```json
+[
+    {
+        "key": "#LOC_MYMOD_engine_title",
+        "text": "Super Engine"
+    },
+    {
+        "key": "#LOC_MYMOD_engine_description",
+        "text": "A powerful engine."
+    }
+]
+```
+
+例如每批：
+
+```text
+50 条
+```
+
+由：
+
+```json
+"batch_size": 50
+```
+
+控制。
+
+---
+
+# 16. AI 输出必须是结构化数据
+
+推荐要求 AI 返回：
+
+```json
+[
+    {
+        "key": "#LOC_MYMOD_engine_title",
+        "text": "超级发动机"
+    },
+    {
+        "key": "#LOC_MYMOD_engine_description",
+        "text": "一台强力的发动机。"
+    }
+]
+```
+
+不要要求 AI 返回：
+
+```text
+翻译如下：
+
+xxx
+xxx
+```
+
+否则解析困难。
+
+---
+
+# 17. AI System Prompt
+
+基本原则：
+
+```text
+You are a professional KSP mod localization translator.
+
+Translate English into Simplified Chinese.
+
+Rules:
+
+1. Preserve every localization key.
+2. Do not add or remove entries.
+3. Return valid JSON only.
+4. Do not explain your answer.
+5. Preserve numbers, units, identifiers and technical names.
+6. Preserve KSP terminology consistently.
+7. Do not translate internal identifiers.
+8. Translate player-facing text naturally.
+```
+
+未来通过 Glossary 动态追加术语表。
+
+---
+
+# 18. AI 翻译失败处理
+
+API 失败不能导致整个项目崩溃。
+
+例如：
+
+```text
+Batch 1  OK
+Batch 2  OK
+Batch 3  FAILED
+Batch 4  OK
+Batch 5  OK
+```
+
+应该：
+
+```text
+记录 Batch 3 FAILED
+继续 Batch 4
+继续 Batch 5
+```
+
+最终报告：
+
+```text
+Total:      250
+Translated: 200
+Failed:      50
+```
+
+失败的文本保留英文。
+
+---
+
+# 19. API Retry
+
+网络错误、429、502、503 等临时错误应该重试。
+
+建议：
+
+```text
+第一次失败
+等待 2 秒
+
+第二次失败
+等待 4 秒
+
+第三次失败
+等待 8 秒
+
+仍然失败
+记录错误并跳过
+```
+
+最大重试次数配置：
+
+```json
+{
+    "max_retries": 3
+}
+```
+
+不要无限重试。
+
+---
+
+# 20. Translation Cache
+
+必须避免同一文本反复调用 AI。
+
+例如：
+
+```json
+{
+    "Super Engine": "超级发动机",
+    "Fuel Tank": "燃料箱",
+    "Reaction Wheel": "反应轮"
+}
+```
+
+文件：
+
+```text
+translation_cache.json
+```
+
+流程：
+
+```text
+发现文本
+    ↓
+查询 Cache
+    ↓
+存在？
+ ├── YES → 直接使用
+ └── NO  → AI 翻译
+              ↓
+           写入 Cache
+```
+
+---
+
+# 21. Translation Memory
+
+长期应该将简单 Cache 升级成 Translation Memory。
+
+推荐记录：
+
+```json
+{
+    "source": "Super Engine",
+    "target": "超级发动机",
+    "source_language": "en-us",
+    "target_language": "zh-cn",
+    "model": "model-name",
+    "timestamp": "...",
+    "verified": false
+}
+```
+
+这样未来可以区分：
+
+```text
+AI 自动翻译
+人工确认翻译
+术语表翻译
+```
+
+---
+
+# 22. Glossary
+
+KSP 有大量固定术语。
+
+例如：
+
+```json
+{
+    "Engine": "发动机",
+    "Fuel Tank": "燃料箱",
+    "Reaction Wheel": "反应轮",
+    "Docking Port": "对接口",
+    "Liquid Fuel": "液体燃料",
+    "Oxidizer": "氧化剂",
+    "Monopropellant": "单组元推进剂"
+}
+```
+
+文件：
+
+```text
+glossary.json
+```
+
+AI Prompt 应明确：
+
+> Glossary terms must be translated consistently.
+
+---
+
+# 23. 翻译质量检查
+
+AI 返回结果后必须验证。
+
+至少检查：
+
+## Key 数量
+
+输入：
+
+```text
+50
+```
+
+输出必须：
+
+```text
+50
+```
+
+否则判定异常。
+
+---
+
+## Key 完整性
+
+输入：
+
+```text
+#LOC_X_engine_title
+```
+
+输出必须仍然存在：
+
+```text
+#LOC_X_engine_title
+```
+
+---
+
+## 数字
+
+例如：
+
+```text
+Engine produces 250 kN
+```
+
+不能莫名丢掉：
+
+```text
+250
+```
+
+---
+
+## 单位
+
+例如：
+
+```text
+250 kN
+1.5 t
+10 %
+```
+
+必须尽可能保持。
+
+---
+
+## 格式符
+
+未来需要保护：
+
+```text
+{0}
+{1}
+%s
+```
+
+以及 KSP 特有格式。
+
+---
+
+# 24. Dry Run
+
+任何修改文件之前都应该支持：
+
+```bash
+python localizer.py --dry-run
+```
+
+Dry Run：
+
+* 扫描文件
+* 解析 PART
+* 生成 Key
+* 检查已有 Localization
+* 显示将修改的文件
+* 显示将生成的 Localization
+* 可以进行 AI 翻译预览
+
+但是：
+
+> 不修改任何原始 CFG。
+
+---
+
+# 25. Diff
+
+建议记录修改：
+
+```text
+FILE: Parts/engine.cfg
+
+- title = Super Engine
++ title = #LOC_MYMOD_engine_title
+
+- description = Powerful engine.
++ description = #LOC_MYMOD_engine_description
+```
+
+CLI 可以提供：
+
+```bash
+--diff
+```
+
+未来可以直接使用 Python `difflib`。
+
+---
+
+# 26. 日志系统
+
+日志是正式功能，而不是 Debug 输出。
+
+每次执行创建唯一 Run ID：
+
+```text
+20260916_215400
+```
+
+日志：
+
+```text
+logs/
+└── run_20260916_215400.log
+```
+
+建议同时支持：
+
+```text
+run_20260916_215400.jsonl
+```
+
+---
+
+# 27. 日志等级
+
+至少：
+
+```text
+DEBUG
+INFO
+WARNING
+ERROR
+```
+
+---
+
+# 28. 重要日志事件
+
+例如：
+
+```text
+SCAN_START
+SCAN_FILE
+SCAN_FILE_FAILED
+
+PART_FOUND
+FIELD_FOUND
+FIELD_SKIPPED
+
+LOC_KEY_CREATED
+LOC_KEY_DUPLICATE
+
+BACKUP_CREATED
+BACKUP_EXISTS
+
+FILE_REWRITE_START
+FILE_REWRITE_SUCCESS
+FILE_REWRITE_FAILED
+
+AI_BATCH_START
+AI_BATCH_SUCCESS
+AI_BATCH_FAILED
+AI_RETRY
+
+CACHE_HIT
+CACHE_MISS
+
+VALIDATION_SUCCESS
+VALIDATION_FAILED
+
+RUN_FINISHED
+```
+
+---
+
+# 29. 日志示例
+
+```text
+2026-09-16 21:54:01 INFO  RUN_START
+2026-09-16 21:54:01 INFO  SCAN_START path=GameData/MyMod
+2026-09-16 21:54:01 INFO  SCAN_FILE file=Parts/engine.cfg
+2026-09-16 21:54:01 INFO  PART_FOUND name=testEngine
+2026-09-16 21:54:01 INFO  FIELD_FOUND field=title
+2026-09-16 21:54:01 INFO  LOC_KEY_CREATED key=#LOC_MYMOD_testEngine_title
+2026-09-16 21:54:01 INFO  BACKUP_CREATED file=Parts/engine.cfg
+2026-09-16 21:54:01 INFO  FILE_REWRITE_SUCCESS
+2026-09-16 21:54:02 INFO  AI_BATCH_START batch=1 count=50
+2026-09-16 21:54:04 INFO  AI_BATCH_SUCCESS batch=1
+2026-09-16 21:54:04 INFO  CACHE_WRITE
+2026-09-16 21:54:04 INFO  RUN_FINISHED
+```
+
+---
+
+# 30. JSONL 日志
+
+机器可读日志：
+
+```json
+{
+    "timestamp": "2026-09-16T21:54:01",
+    "level": "INFO",
+    "event": "PART_FOUND",
+    "file": "Parts/engine.cfg",
+    "part": "testEngine"
+}
+```
+
+未来可以用于：
+
+* GUI
+* 统计
+* Debug
+* 自动化测试
+* CI
+* Agent 分析
+
+---
+
+# 31. Manifest
+
+每次执行生成：
+
+```text
+manifest.json
+```
+
+例如：
+
+```json
+{
+    "mod": "MyMod",
+    "run_id": "20260916_215400",
+    "parts": 531,
+    "strings": 2187,
+    "translated": 2100,
+    "cached": 87,
+    "failed": 0,
+    "files_modified": 413,
+    "backups_created": 413
+}
+```
+
+---
+
+# 32. 增量更新
+
+第一次：
+
+```text
+2187 strings
+```
+
+Mod 更新后：
+
+```text
+2204 strings
+```
+
+不能重新翻译全部 2204 条。
+
+应该识别：
+
+```text
+17 new strings
+```
+
+只发送：
+
+```text
+17
+```
+
+条。
+
+---
+
+# 33. 增量判断
+
+建议基于：
+
+```text
+LOC Key
++
+English Source Text
+```
+
+进行判断。
+
+例如：
+
+```text
+#LOC_MYMOD_engine_title
+Super Engine
+```
+
+如果英文变成：
+
+```text
+Super Engine Mk2
+```
+
+应该认为是新的待翻译内容。
+
+因此不能只使用：
+
+```text
+key
+```
+
+作为缓存判断条件。
+
+---
+
+# 34. Localization 输出
+
+最终：
+
+```text
+MyMod/
+└── Localization/
+    ├── en-us.cfg
+    ├── zh-cn.cfg
+    ├── translation.csv
+    ├── manifest.json
+    ├── translation_cache.json
+    └── logs/
+```
+
+---
+
+# 35. CSV
+
+CSV 主要用于人工审核。
+
+格式：
+
+```csv
+key,en-us,zh-cn
+#LOC_MYMOD_engine_title,Super Engine,超级发动机
+#LOC_MYMOD_engine_description,A powerful engine.,一台强力的发动机。
+```
+
+未来可以支持：
+
+```bash
+--export-csv
+--import-csv
+```
+
+从而允许：
+
+```text
+Python
+↓
+CSV
+↓
+Excel
+↓
+人工翻译
+↓
+CSV
+↓
+Python
+↓
+zh-cn.cfg
+```
+
+---
+
+# 36. KSP 节点规则
+
+未来应该使用规则配置，而不是把所有逻辑硬编码进 Python。
+
+例如：
+
+```json
+{
+    "PART": [
+        "title",
+        "description",
+        "manufacturer",
+        "tags"
+    ],
+    "RESOURCE_DEFINITION": [
+        "displayName",
+        "abbreviation"
+    ],
+    "VARIANT": [
+        "displayName",
+        "description"
+    ],
+    "SUBTYPE": [
+        "title",
+        "descriptionSummary",
+        "descriptionDetail"
+    ]
+}
+```
+
+这样以后增加节点不需要修改核心解析器。
+
+---
+
+# 37. 大型 Mod 支持
+
+目标测试对象包括：
+
+```text
+Restock
+Near Future 系列
+Bluedog Design Bureau
+Kerbalism
+B9PartSwitch
+```
+
+这些 Mod 可以用来测试：
+
+* 大量 PART
+* 深层 ConfigNode
+* 重复字段
+* 特殊格式
+* 已有 Localization
+* 大量术语
+* 大量 AI 翻译
+
+---
+
+# 38. 不应该做的事情
+
+Agent 开发时禁止为了“快速实现”采取以下方式：
+
+## 不要
+
+```text
+rm -rf
+```
+
+或类似批量删除整个 Mod。
+
+## 不要
+
+未经备份就直接重写 CFG。
+
+## 不要
+
+把整个 CFG 重新格式化。
+
+## 不要
+
+用全局：
+
+```text
+title =
+```
+
+正则替换所有 title。
+
+## 不要
+
+修改 MODULE 内部字段，除非明确加入对应规则。
+
+## 不要
+
+为了修复一个解析问题而删除原来的测试。
+
+## 不要
+
+把 API Key 写死在源码。
+
+---
+
+# 39. CLI 设计
+
+最终 CLI 建议：
+
+```bash
+python localizer.py \
+    --mod ./GameData/MyMod \
+    --prefix MYMOD
+```
+
+Dry Run：
+
+```bash
+python localizer.py \
+    --mod ./GameData/MyMod \
+    --prefix MYMOD \
+    --dry-run
+```
+
+只扫描：
+
+```bash
+python localizer.py \
+    --mod ./GameData/MyMod \
+    --scan-only
+```
+
+重新翻译：
+
+```bash
+python localizer.py \
+    --mod ./GameData/MyMod \
+    --translate
+```
+
+未来：
+
+```bash
+--rewrite
+--import-csv
+--export-csv
+--no-ai
+--force-backup
+--verbose
+```
+
+---
+
+# 40. 推荐项目结构
+
+最终建议：
+
+```text
+ksp-localizer/
+│
+├── README.md
+├── CLAUDE.md
+├── requirements.txt
+├── pyproject.toml
+│
+├── src/
+│   └── ksp_localizer/
+│       ├── __init__.py
+│       ├── cli.py
+│       ├── scanner.py
+│       ├── parser.py
+│       ├── extractor.py
+│       ├── keygen.py
+│       ├── rewriter.py
+│       ├── localization.py
+│       ├── translator.py
+│       ├── cache.py
+│       ├── glossary.py
+│       ├── validator.py
+│       ├── backup.py
+│       ├── manifest.py
+│       └── logging_utils.py
+│
+├── config/
+│   ├── nodes.json
+│   └── glossary.json
+│
+├── tests/
+│   ├── fixtures/
+│   │   ├── simple_part.cfg
+│   │   ├── nested_module.cfg
+│   │   ├── existing_localization.cfg
+│   │   └── special_characters.cfg
+│   │
+│   ├── test_parser.py
+│   ├── test_extractor.py
+│   ├── test_rewriter.py
+│   ├── test_keygen.py
+│   └── test_validator.py
+│
+└── examples/
+    └── translator.example.json
+```
+
+实际开发过程中可以逐步从当前单文件脚本迁移到这个结构，不要求一次完成。
+
+---
+
+# 41. 测试要求
+
+每增加一个重要功能，必须增加测试。
+
+最低测试：
+
+```text
+✓ 简单 PART
+✓ 多 PART
+✓ 嵌套 MODULE
+✓ 注释
+✓ 已有 #LOC_
+✓ 中文路径
+✓ Unicode
+✓ 重复 Key
+✓ 空字段
+✓ 特殊字符
+✓ Backup
+✓ Rewrite
+✓ Dry Run
+✓ AI 返回错误
+✓ AI 返回非法 JSON
+✓ Translation Cache
+```
+
+---
+
+# 42. AI 不应该成为核心依赖
+
+核心功能：
+
+```text
+解析
+提取
+Key
+Rewrite
+Localization
+Backup
+```
+
+必须完全可以：
+
+```text
+不连接互联网
+```
+
+运行。
+
+AI 只是：
+
+```text
+Translation Provider
+```
+
+而不是整个工具的核心。
+
+因此应该设计成：
+
+```text
+Translator
+    │
+    ├── OpenAICompatibleTranslator
+    ├── ManualTranslator
+    └── Future translators
+```
+
+---
+
+# 43. Translator Interface
+
+建议：
+
+```python
+class Translator:
+    def translate(self, entries):
+        raise NotImplementedError
+```
+
+OpenAI：
+
+```python
+class OpenAICompatibleTranslator(Translator):
+    ...
+```
+
+未来可以增加：
+
+```text
+DeepLTranslator
+GeminiTranslator
+LocalLLMTranslator
+```
+
+而无需修改扫描器。
+
+---
+
+# 44. 核心数据模型
+
+建议内部统一使用：
+
+```python
+LocalizationEntry(
+    key="#LOC_MYMOD_engine_title",
+    source="Super Engine",
+    translation="超级发动机",
+    file="Parts/engine.cfg",
+    node="PART",
+    identifier="engine",
+    field="title"
+)
+```
+
+这样后续：
+
+```text
+CSV
+AI
+Cache
+Glossary
+Manifest
+日志
+```
+
+都可以使用同一种数据结构。
+
+---
+
+# 45. 运行流程
+
+最终完整流程：
+
+```text
+                 ┌──────────────┐
+                 │   Mod目录    │
+                 └──────┬───────┘
+                        │
+                        ▼
+                ┌──────────────┐
+                │   CFG扫描    │
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │ Config Parser │
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │ Text Extractor│
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │   Key Gen     │
+                └──────┬───────┘
+                       │
+              ┌────────┴────────┐
+              │                 │
+              ▼                 ▼
+        en-us.cfg           Translation
+                                │
+                         ┌──────┴──────┐
+                         │             │
+                       Cache          AI
+                         │             │
+                         └──────┬──────┘
+                                │
+                                ▼
+                            zh-cn.cfg
+
+        同时：
+
+        Original CFG
+              │
+              ▼
+           Backup
+              │
+              ▼
+           Rewrite
+              │
+              ▼
+         Modified CFG
+
+        所有步骤
+              │
+              ▼
+          Audit Log
+```
+
+---
+
+# 46. Agent 开发原则
+
+Agent 接手项目以后：
+
+## 第一原则
+
+先阅读：
+
+```text
+README.md
+```
+
+再阅读：
+
+```text
+CLAUDE.md
+```
+
+然后检查：
+
+```text
+tests/
+```
+
+最后再修改代码。
+
+---
+
+## 第二原则
+
+不要直接重写整个项目。
+
+应该：
+
+```text
+理解现有代码
+↓
+运行测试
+↓
+定位问题
+↓
+最小修改
+↓
+增加测试
+↓
+运行全部测试
+```
+
+---
+
+## 第三原则
+
+每次完成一个功能：
+
+```text
+实现
+↓
+测试
+↓
+日志验证
+↓
+再进入下一个功能
+```
+
+---
+
+# 47. 推荐开发顺序
+
+当前第一版已经测试通过。
+
+因此下一步：
+
+## Phase 1 — Backup + Rewrite
+
+实现：
+
+```text
+backup.py
+rewriter.py
+```
+
+完成：
+
+```text
+.cfg
+ ↓
+.bak
+ ↓
+rewrite
+```
+
+先不要接 AI。
+
+---
+
+## Phase 2 — Logging
+
+加入：
+
+```text
+logging_utils.py
+```
+
+保证 Phase 1 每一步都有日志。
+
+---
+
+## Phase 3 — Localization
+
+完善：
+
+```text
+en-us.cfg
+zh-cn.cfg
+translation.csv
+```
+
+---
+
+## Phase 4 — OpenAI Compatible API
+
+实现：
+
+```text
+translator.py
+```
+
+支持：
+
+```text
+base_url
+api_key
+model
+batch_size
+temperature
+retry
+```
+
+---
+
+## Phase 5 — Translation Cache
+
+实现：
+
+```text
+cache.py
+```
+
+减少 API 调用。
+
+---
+
+## Phase 6 — Validator
+
+实现：
+
+```text
+validator.py
+```
+
+检查：
+
+```text
+Key
+数量
+数字
+单位
+格式
+```
+
+---
+
+## Phase 7 — Dry Run + Diff
+
+实现：
+
+```text
+--dry-run
+--diff
+```
+
+---
+
+## Phase 8 — Manifest + Incremental
+
+实现：
+
+```text
+manifest.json
+translation_memory.json
+```
+
+支持增量更新。
+
+---
+
+## Phase 9 — Glossary
+
+实现：
+
+```text
+glossary.json
+```
+
+---
+
+## Phase 10 — KSP Node Rules
+
+从：
+
+```text
+PART only
+```
+
+扩展到：
+
+```text
+PART
+RESOURCE_DEFINITION
+VARIANT
+SUBTYPE
+...
+```
+
+---
+
+# 48. 当前 MVP 验收标准
+
+第二版完成后，下面的测试必须全部通过：
+
+给定：
+
+```cfg
+PART
+{
+    name = testEngine
+
+    title = Test Engine
+    manufacturer = Test Company
+    description = Very powerful engine.
+    tags = engine rocket
+
+    MODULE
+    {
+        name = TestModule
+        title = Internal Module Name
+    }
+}
+```
+
+运行工具。
+
+必须得到：
+
+```text
+engine.cfg
+engine.cfg.bak
+```
+
+且：
+
+```cfg
+PART
+{
+    name = testEngine
+
+    title = #LOC_TESTMOD_testEngine_title
+    manufacturer = #LOC_TESTMOD_testEngine_manufacturer
+    description = #LOC_TESTMOD_testEngine_description
+    tags = #LOC_TESTMOD_testEngine_tags
+
+    MODULE
+    {
+        name = TestModule
+        title = Internal Module Name
+    }
+}
+```
+
+生成：
+
+```text
+Localization/en-us.cfg
+Localization/zh-cn.cfg
+Localization/translation.csv
+```
+
+并且：
+
+```text
+#LOC_TESTMOD_testEngine_title
+```
+
+等 Key 保持一致。
+
+AI 翻译失败时：
+
+```text
+原始 CFG 不丢失
+.bak 存在
+en-us.cfg 正常
+失败项记录日志
+程序继续处理其他 Batch
+```
+
+---
+
+# 49. 最终目标
+
+最终这个项目应该成为一个真正的：
+
+> **KSP Mod Localization Pipeline**
+
+而不是一次性的翻译脚本。
+
+目标工作流：
+
+```text
+下载 KSP Mod
+       ↓
+指定 Mod 目录
+       ↓
+扫描
+       ↓
+自动识别可本地化文本
+       ↓
+检查已有 Localization
+       ↓
+生成稳定 LOC Key
+       ↓
+备份原 CFG
+       ↓
+安全修改 CFG
+       ↓
+生成 en-us.cfg
+       ↓
+Translation Memory
+       ↓
+Glossary
+       ↓
+OpenAI Compatible AI
+       ↓
+自动翻译
+       ↓
+质量检查
+       ↓
+生成 zh-cn.cfg
+       ↓
+日志 + Manifest
+       ↓
+完成
+```
+
+最终用户只需要：
+
+```bash
+python localizer.py \
+    --mod ./GameData/MyMod \
+    --prefix MYMOD
+```
+
+就可以完成整个 Mod 的本地化准备工作。
+
+---
+
+# 50. 当前 Agent 任务
+
+Agent 当前不要一次实现所有 Future Feature。
+
+**第一任务：**
+
+实现：
+
+```text
+Backup
+Rewrite
+Logging
+```
+
+要求：
+
+1. 保留当前第一版扫描逻辑。
+2. 不破坏已经通过的测试。
+3. 修改 CFG 前自动创建 `.bak`。
+4. 已有 `.bak` 默认不覆盖。
+5. 只修改安全字段。
+6. 所有修改写入日志。
+7. 增加单元测试。
+8. 支持 `--dry-run`，Dry Run 不得修改任何文件。
+9. 最后运行全部测试。
+10. 不实现 AI，直到上述功能稳定。
+
+完成后再进入：
+
+```text
+OpenAI Compatible Translator
+```
+
+---
+
+# 51. 项目设计理念
+
+本项目最重要的不是“AI 翻译得多快”，而是：
+
+```text
+Correctness
+Safety
+Reproducibility
+Auditability
+Incremental Processing
+Translation Consistency
+```
+
+也就是说：
+
+> **宁可少自动化一点，也不要因为自动化而破坏 Mod。**
+
+AI 翻译可以错。
+
+Localization 可以重新生成。
+
+但是：
+
+> **原始 Mod 不应该因为这个工具而不可恢复。**
