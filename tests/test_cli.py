@@ -138,5 +138,235 @@ class RunAndDryRunTests(unittest.TestCase):
         self.assertEqual(self.snapshot(self.tool_root), before_tool)
 
 
+class StableKeyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.mod = self.root / "mod"
+        self.mod.mkdir()
+        self.tool_root = self.root / "tool"
+        self.tool_root.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _capture_run(self, dry_run=True):
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            run(str(self.mod), "BDB", dry_run=dry_run, tool_root=self.tool_root)
+        return buf.getvalue()
+
+    def test_cross_file_same_name_parts_get_posix_sorted_keys(self):
+        (self.mod / "z_last.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = Last Engine
+}
+""",
+            encoding="utf-8",
+        )
+        parts_dir = self.mod / "Parts"
+        parts_dir.mkdir()
+        (parts_dir / "engine.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = First Engine
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+
+        self.assertIn("#LOC_BDB_engine_title", out)
+        self.assertIn("#LOC_BDB_engine_title__z_last", out)
+        self.assertIn("LOC_KEY_DUPLICATE", out)
+        self.assertNotIn("#LOC_BDB_engine_title__Parts_engine", out)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertIn("#LOC_BDB_engine_title = First Engine", en)
+        self.assertIn("#LOC_BDB_engine_title__z_last = Last Engine", en)
+
+    def test_in_file_same_name_parts_get_numbered_suffixes(self):
+        (self.mod / "twins.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = First Copy
+}
+PART
+{
+    name = engine
+    title = Second Copy
+}
+PART
+{
+    name = engine
+    title = Third Copy
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+
+        self.assertIn("#LOC_BDB_engine_title", out)
+        self.assertIn("#LOC_BDB_engine_title__2", out)
+        self.assertIn("#LOC_BDB_engine_title__3", out)
+        self.assertEqual(out.count("LOC_KEY_DUPLICATE"), 2)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertIn("#LOC_BDB_engine_title = First Copy", en)
+        self.assertIn("#LOC_BDB_engine_title__2 = Second Copy", en)
+        self.assertIn("#LOC_BDB_engine_title__3 = Third Copy", en)
+
+    def test_nested_module_fields_are_not_extracted_or_keyed(self):
+        (self.mod / "part.cfg").write_text(
+            """
+PART
+{
+    name = testEngine
+    title = Test Engine
+    manufacturer = Test Company
+    description = Very powerful engine.
+    tags = engine rocket
+    MODULE
+    {
+        name = TestModule
+        title = Internal Module Name
+    }
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+        self.assertNotIn("Internal Module Name", out)
+        self.assertIn("#LOC_BDB_testEngine_title", out)
+        self.assertNotIn("TestModule", out)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertIn("#LOC_BDB_testEngine_title = Test Engine", en)
+        self.assertNotIn("Internal Module Name", en)
+        original = (self.mod / "part.cfg").read_text(encoding="utf-8")
+        self.assertIn("title = Internal Module Name", original)
+
+    def test_cross_file_and_in_file_collision_stack(self):
+        parts_dir = self.mod / "Parts"
+        parts_dir.mkdir()
+        (parts_dir / "engine.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = Canonical
+}
+""",
+            encoding="utf-8",
+        )
+        (self.mod / "z_last.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = Later First
+}
+PART
+{
+    name = engine
+    title = Later Second
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+        self.assertIn("#LOC_BDB_engine_title", out)
+        self.assertIn("#LOC_BDB_engine_title__z_last", out)
+        self.assertIn("#LOC_BDB_engine_title__z_last__2", out)
+        self.assertEqual(out.count("LOC_KEY_DUPLICATE"), 2)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertIn("#LOC_BDB_engine_title = Canonical", en)
+        self.assertIn("#LOC_BDB_engine_title__z_last = Later First", en)
+        self.assertIn("#LOC_BDB_engine_title__z_last__2 = Later Second", en)
+
+    def test_skipped_fields_do_not_appear_in_keys_or_localization(self):
+        (self.mod / "part.cfg").write_text(
+            """
+PART
+{
+    name = mixed
+    title = #LOC_OLD_mixed_title
+    description =
+    manufacturer = Super Co // keep this note
+    tags = leftover
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+        self.assertNotIn("#LOC_BDB_mixed_title", out)
+        self.assertNotIn("#LOC_BDB_mixed_description", out)
+        self.assertIn("#LOC_BDB_mixed_manufacturer", out)
+        self.assertIn("#LOC_BDB_mixed_tags", out)
+        self.assertNotIn("keep this note", out)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertNotIn("mixed_title", en)
+        self.assertNotIn("mixed_description", en)
+        self.assertIn("#LOC_BDB_mixed_manufacturer = Super Co", en)
+        self.assertIn("#LOC_BDB_mixed_tags = leftover", en)
+        csv_text = (self.mod / "Localization" / "translation.csv").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("#LOC_BDB_mixed_manufacturer", csv_text)
+        self.assertNotIn("keep this note", csv_text)
+
+    def test_keys_are_grouped_by_part_name_and_field(self):
+        (self.mod / "a.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = Title Only
+}
+""",
+            encoding="utf-8",
+        )
+        (self.mod / "b.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    description = Description Only
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._capture_run(dry_run=True)
+        self.assertIn("#LOC_BDB_engine_title", out)
+        self.assertIn("#LOC_BDB_engine_description", out)
+        self.assertNotIn("#LOC_BDB_engine_description__b", out)
+        self.assertNotIn("LOC_KEY_DUPLICATE", out)
+
+        self._capture_run(dry_run=False)
+        en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
+        self.assertIn("#LOC_BDB_engine_title = Title Only", en)
+        self.assertIn("#LOC_BDB_engine_description = Description Only", en)
+
+
 if __name__ == "__main__":
     unittest.main()

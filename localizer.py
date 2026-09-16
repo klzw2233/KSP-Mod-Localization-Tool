@@ -3,6 +3,7 @@
 import argparse
 import csv
 import re
+from collections import defaultdict
 from pathlib import Path
 
 LOCALIZABLE_FIELDS = [
@@ -14,9 +15,11 @@ LOCALIZABLE_FIELDS = [
 
 
 class PartInfo:
-    def __init__(self, name):
+    def __init__(self, name, source=None):
         self.name = name
         self.fields = {}
+        self.source = source
+        self.keys = {}
 
 
 def parse_parts(text):
@@ -52,7 +55,6 @@ def parse_parts(text):
         block = text[brace_start:i]
 
         part = extract_part(block)
-
         if part:
             parts.append(part)
 
@@ -90,11 +92,13 @@ def extract_part(block):
             continue
 
         key, value = map(str.strip, line.split("=", 1))
+        if "//" in value:
+            value = value.split("//", 1)[0].rstrip()
 
         if key == "name":
             part_name = value
 
-        if key in LOCALIZABLE_FIELDS:
+        if key in LOCALIZABLE_FIELDS and value and not value.lstrip().startswith("#"):
             fields[key] = value
 
     if not part_name:
@@ -108,8 +112,9 @@ def extract_part(block):
 
 def scan_mod(mod_dir):
     parts = []
+    root = Path(mod_dir)
 
-    for cfg in Path(mod_dir).rglob("*.cfg"):
+    for cfg in root.rglob("*.cfg"):
 
         try:
             text = cfg.read_text(
@@ -119,16 +124,53 @@ def scan_mod(mod_dir):
         except:
             continue
 
-        parts.extend(parse_parts(text))
+        found = parse_parts(text)
+        rel = cfg.relative_to(root).as_posix()
+        for part in found:
+            part.source = rel
+        parts.extend(found)
 
     return parts
 
 
-def build_loc_key(prefix, part_name, field):
-    return f"#LOC_{prefix}_{part_name}_{field}"
+def build_loc_key(prefix, part_name, field, suffix=""):
+    key = f"#LOC_{prefix}_{part_name}_{field}"
+    if suffix:
+        key += f"__{suffix}"
+    return key
 
 
-def write_localization(parts, out_dir, prefix):
+def _sanitize_rel(rel):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", rel[:-4])
+
+
+def _assign_keys(parts, prefix):
+    """Fill part.keys. Fallback keys emit LOC_KEY_DUPLICATE on stdout."""
+    by_name_field = defaultdict(list)
+    for index, part in enumerate(parts):
+        for field in part.fields:
+            by_name_field[(part.name, field)].append((index, part))
+
+    for (name, field), group in by_name_field.items():
+        group.sort(key=lambda item: (item[1].source or "", item[0]))
+        file_seen = defaultdict(int)
+        first_source = group[0][1].source
+        for _, part in group:
+            file_seen[part.source] += 1
+            n = file_seen[part.source]
+            if part.source == first_source:
+                suffix = ""
+            else:
+                suffix = _sanitize_rel(part.source or "")
+            if n > 1:
+                suffix = f"{suffix}__{n}" if suffix else str(n)
+            key = build_loc_key(prefix, name, field, suffix)
+            part.keys[field] = key
+            if suffix:
+                print(f"WARNING LOC_KEY_DUPLICATE {key}")
+
+
+def write_localization(parts, out_dir):
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -155,11 +197,7 @@ def write_localization(parts, out_dir, prefix):
 
         for field, value in part.fields.items():
 
-            key = build_loc_key(
-                prefix,
-                part.name,
-                field
-            )
+            key = part.keys[field]
 
             en_lines.append(
                 f"        {key} = {value}"
@@ -234,13 +272,14 @@ def run(mod, prefix, dry_run=False, tool_root=None):
         tool_root = Path(__file__).resolve().parent
 
     parts = scan_mod(mod)
+    _assign_keys(parts, prefix)
 
     print(f"Found {len(parts)} PARTs")
 
     keys = []
     for part in parts:
         for field in part.fields:
-            keys.append(build_loc_key(prefix, part.name, field))
+            keys.append(part.keys[field])
     if keys:
         print("Keys:")
         for key in keys:
@@ -250,7 +289,7 @@ def run(mod, prefix, dry_run=False, tool_root=None):
         return
 
     loc_dir = Path(mod) / "Localization"
-    write_localization(parts, loc_dir, prefix)
+    write_localization(parts, loc_dir)
     print(f"Generated: {loc_dir}")
 
 
