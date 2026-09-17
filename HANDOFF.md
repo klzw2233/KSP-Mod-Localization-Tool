@@ -6,10 +6,11 @@
 
 - 分支：`main`（Phase 1 已合入，`3a15ac9`）
 - Phase 1 合同（已实现）：[`docs/phase-1-spec.md`](docs/phase-1-spec.md)
-- Phase 1 tickets：`.scratch/phase-1-backup-rewrite/issues/`（01–05 全部 resolved）
-- 上游愿景：[`需求和设计文档.txt`](需求和设计文档.txt)。**不要从 §3 / §47 Future 章节直接开工。** 与已实现行为冲突时，代码和 Phase 1 合同赢。备份在工具 `data/`，不是旁路 `.bak`。
+- Phase 2 合同（已锁定，未实现）：[`docs/phase-2-spec.md`](docs/phase-2-spec.md)
+- Phase 2 tickets：`.scratch/phase-2-openai-translate/issues/`（01–05，全部 open）
+- 上游愿景：[`需求和设计文档.txt`](需求和设计文档.txt)。**不要从 §3 / §47 Future 章节直接开工。** 与已实现行为冲突时，代码和已锁定 spec 赢。备份在工具 `data/`，不是旁路 `.bak`。
 
-产品仍是单文件 `localizer.py`。入口：`run(mod, prefix, dry_run, tool_root=None)`。测试注入 `tool_root`，不要用仓库目录当备份根。
+产品仍是单文件 `localizer.py`。入口将变成：`run(mod, prefix, dry_run, tool_root=None, translate=False) -> int`。测试注入 `tool_root`，不要用仓库目录当备份根。
 
 ## 已锁定的行为（不要回退）
 
@@ -17,7 +18,7 @@
 
 跳过：空 / 空白；`value.lstrip().startswith("#")`。value 是 `=` 到行尾 `//` 之间（trim）。key 按 `(part name, field)` 分组，文件按相对路径 `as_posix()` 排序，再按扫描序号。备用 key 打 `WARNING LOC_KEY_DUPLICATE`。
 
-CLI：`--mod` / `--prefix` 必填，`--dry-run` 零写入（含不创建/不改 `data/`）。正式跑覆盖 Localization 三份；`zh-cn` 仍是英文副本；csv `utf-8-sig`，zh-cn 列空字符串。
+CLI：`--mod` / `--prefix` 必填，`--dry-run` 零写入（含不创建/不改 `data/`）。Phase 1 正式跑覆盖 Localization 三份；`zh-cn` 仍是英文副本；csv `utf-8-sig`，zh-cn 列空字符串。**Phase 2 会改这两点**（合并写 loc；csv 列对齐 cfg）。在 ticket 01 之前不要改。
 
 备份 / rewrite：有改动的 CFG 先 `copy2` 到 `<tool_root>/data/backups/<mod_id>/files/<rel>`，写 `mapping.json`；再 `*.cfg.tmp` + `os.replace`，只换安全字段 value。mapping 已有则不覆盖备份。无改动不备份不写。失败则该文件保持原样并继续。scan 与 rewrite 共用 `_iter_part_blocks` / `_iter_first_level_fields`。`_iter_first_level_entries` + `_is_extractable` 给扫描日志打 `FIELD_SKIPPED`。
 
@@ -32,16 +33,20 @@ CLI：`--mod` / `--prefix` 必填，`--dry-run` 零写入（含不创建/不改 
 
 ## 下一个要做
 
-用户要讨论如何接入 **OpenAI Compatible API**，用来填写 `zh-cn.cfg`（本阶段仍是英文副本）。
+Phase 2 已 grill 完。**先开 `feat/*`，按 ticket 01→05 做。** 不要直接在 `main` 上实现。
 
-未 grill / 未写 Phase 2 spec 之前：
+硬约束（合同里写死的）：
 
-- 不要写 translator、不要加 SDK 或第三方依赖
-- 不要拆 `src/ksp_localizer/`
-- 不要做 cache / glossary / manifest / `--restore` / `--translate` 旗标（除非新 spec 明确要）
-- 不要回退 Phase 1 的备份位置、skip 规则、dry-run 零写入
+- `--translate` 才打 API；默认离线
+- stdlib `urllib`，**禁止** `openai` SDK，**禁止**一条文本一次请求
+- 串行 batch，默认 50；429/5xx/网络才重试
+- 翻译失败不回滚 rewrite；`--translate` 问题 `sys.exit(1)`；扫描/rewrite 失败仍 0
+- 已有中文合并保留；csv `zh-cn` 列对齐 cfg
+- `translator.json` gitignore；`OPENAI_API_KEY` 覆盖 key
+- dry-run 永不打 API
+- 仍单文件 `localizer.py`
 
-新功能开 `feat/*`，不要直接在 `main` 上实现（文档同步除外）。
+不要做：cache / glossary / Translator 类 / 拆包 / `--restore` / `--force-retranslate`。
 
 ## 实测样本
 
@@ -52,11 +57,11 @@ python localizer.py --mod 测试文件夹/001KerbalActuators --prefix WBI --dry-
 python localizer.py --mod 测试文件夹/001KerbalActuators --prefix WBI
 ```
 
-2 个 PART。`title` / `description` 已改成 `#LOC_WBI_…`；`manufacturer = #autoLOC_501646` 跳过；MODULE 未碰；Mod 树没有 `.bak`。
+2 个 PART。`title` / `description` 已改成 `#LOC_WBI_…`；`manufacturer = #autoLOC_501646` 跳过；MODULE 未碰；Mod 树没有 `.bak`。`zh-cn.cfg` 目前仍是英文副本。
 
 ## 工作方式
 
-- 规格驱动；实现前读 / 写 spec，不要从长设计文档的 Future 章节开工
+- 规格驱动；实现前读 `/docs/phase-2-spec.md`，claim 对应 ticket
 - 能 TDD 就 TDD：先确认 seam，红 → 绿
 - 做完跑全量 `python -m unittest discover -s tests`
 - 用 `/code-review`（Standards + Spec 两轴）

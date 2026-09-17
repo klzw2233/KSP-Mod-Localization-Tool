@@ -4,10 +4,12 @@
 
 Phase 1 已完成：扫描 + 稳定 key + dry-run + 备份 + 只改 value 的 rewrite + 命名事件日志。
 
+Phase 2 合同已锁定、未实现：OpenAI Compatible API 填写 `zh-cn.cfg`。见 [`docs/phase-2-spec.md`](docs/phase-2-spec.md)。
+
 ## 现在能做什么
 
 ```text
-python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
+python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run] [--translate]
 ```
 
 | 参数 | 必填 | 说明 |
@@ -15,6 +17,7 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 | `--mod` | 是 | Mod 根目录 |
 | `--prefix` | 是 | LOC key 前缀，例如 `WBI` |
 | `--dry-run` | 否 | 预览事件和将生成的 key，零写入 |
+| `--translate` | 否 | **未实现。** Phase 2：正式跑才打 OpenAI Compatible API |
 
 缺 `--mod` 或 `--prefix` 会打印用法并以非零退出。没有交互式 `input()`。
 
@@ -22,8 +25,8 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 
 ```text
 <mod>/Localization/en-us.cfg
-<mod>/Localization/zh-cn.cfg          # 本阶段仍是英文副本
-<mod>/Localization/translation.csv    # utf-8-sig，表头 key,en-us,zh-cn
+<mod>/Localization/zh-cn.cfg          # Phase 1：英文副本。Phase 2 起合并，不再整文件盖成英文
+<mod>/Localization/translation.csv    # utf-8-sig；Phase 2 起 zh-cn 列对齐 cfg
 ```
 
 正式跑还会把有改动的 CFG 备份到工具目录（不是 Mod 旁的 `.bak`），再只替换目标字段的 value：
@@ -76,14 +79,16 @@ python -m unittest discover -s tests
 | `localizer.py` | 全部产品代码（单文件，不拆包） |
 | `tests/` | 测试 |
 | `docs/phase-1-spec.md` | Phase 1 锁定合同（已实现） |
+| `docs/phase-2-spec.md` | Phase 2 锁定合同（未实现） |
 | `.scratch/phase-1-backup-rewrite/` | Phase 1 spec + tickets（全部 resolved） |
-| `需求和设计文档.txt` | 上游愿景；与已实现行为冲突时以代码和 Phase 1 合同为准 |
+| `.scratch/phase-2-openai-translate/` | Phase 2 spec + tickets（open） |
+| `需求和设计文档.txt` | 上游愿景；与已实现行为冲突时以代码和已锁定 spec 为准 |
 
 不要提交 `data/`、`测试文件夹/`、`.cfg.tmp`。
 
 ## 还没做
 
-- OpenAI Compatible API 填写 `zh-cn.cfg`（下一阶段，先讨论再写 spec，未锁定前不要实现）
-- translation cache / glossary / manifest / `--restore` / 拆包
+- Phase 2（已锁定）：`--translate` + OpenAI Compatible 填 `zh-cn.cfg`。合同 [`docs/phase-2-spec.md`](docs/phase-2-spec.md)，tickets `.scratch/phase-2-openai-translate/issues/`
+- translation cache / glossary / manifest / `--restore` / 拆包 / `openai` SDK
 
 交接细节见 [`HANDOFF.md`](HANDOFF.md)。

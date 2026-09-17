@@ -1,6 +1,6 @@
 # Phase 1 规格：Backup + Rewrite + Logging + Dry-run
 
-**状态：已实现**（`main` @ `3a15ac9`，2026-09-17）。本文是 Phase 1 的锁定合同，不是下一阶段任务。下一阶段（OpenAI Compatible 翻译 `zh-cn.cfg`）另开 spec。
+**状态：已实现**（`main` @ `3a15ac9`，2026-09-17）。本文是 Phase 1 的锁定合同。下一阶段合同：[`docs/phase-2-spec.md`](phase-2-spec.md)（已锁定，未实现）。
 
 上游愿景见仓库根目录 `需求和设计文档.txt`。其中：
 

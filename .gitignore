@@ -1,6 +1,9 @@
 # Tool runtime data (backups, logs, mapping)
 data/
 
+# Local AI config (secrets). Shape is in docs/phase-2-spec.md
+translator.json
+
 # Python
 __pycache__/
 *.py[cod]
