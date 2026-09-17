@@ -2,7 +2,7 @@
 
 扫描 Kerbal Space Program（KSP1）Mod 的 `.cfg`，提取 `PART` 第一层显示字段，生成 Localization 文件。目标是安全、可回滚、可预览地改写原 CFG，而不是随便批量替换字符串。
 
-当前还在 Phase 1：扫描 + 稳定 key + dry-run + 备份 + 只改 value 的 rewrite。日志是下一张票。
+Phase 1 已完成：扫描 + 稳定 key + dry-run + 备份 + 只改 value 的 rewrite + 命名事件日志。
 
 ## 现在能做什么
 
@@ -35,7 +35,15 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 
 `mod_id` 是 `sha256(normcase(resolve(--mod)))` 的十六进制前 12 位。mapping 里已有的相对路径不会被覆盖。无改动的文件不备份、不写 tmp。
 
-`--dry-run` 不写 Localization、不改原 CFG、不备份、不创建 `data/`。
+正式跑还会写文本日志：
+
+```text
+<tool>/data/logs/run_<YYYYMMDD_HHMMSS>.log
+```
+
+同一秒冲突变成 `run_<id>_2.log`。行里带级别和可 grep 的事件名（`RUN_START`、`SCAN_FILE_FAILED`、`BACKUP_CREATED`、`FILE_REWRITE_FAILED`、`RUN_FINISHED` 等）。
+
+`--dry-run` 不写 Localization、不改原 CFG、不备份、不写 log、不创建 `data/`。事件只打 stdout。坏 UTF-8 文件记 `SCAN_FILE_FAILED` 并跳过；单文件 rewrite 失败记 `FILE_REWRITE_FAILED`，原字节保留，跑完打印失败列表。
 
 ## 扫描规则
 
@@ -73,9 +81,8 @@ python -m unittest discover -s tests
 
 不要提交 `data/`、`测试文件夹/`、`.cfg.tmp`。
 
-## 还没做（Phase 1 剩余）
+## 还没做
 
-- 文本运行日志（ticket 05）
 - AI 翻译（不在 Phase 1）
 
 交接细节见 [`HANDOFF.md`](HANDOFF.md)。

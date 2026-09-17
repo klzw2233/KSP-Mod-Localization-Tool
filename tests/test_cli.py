@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -712,6 +713,218 @@ PART
         mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
         self.assertIn("engine.cfg", mapping["files"])
         self.assertTrue((self._backup_root() / "files" / "engine.cfg").is_file())
+
+
+class LoggingAndFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.mod = self.root / "mod"
+        self.mod.mkdir()
+        self.tool_root = self.root / "tool"
+        self.tool_root.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, dry_run=False):
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            run(str(self.mod), "MYMOD", dry_run=dry_run, tool_root=self.tool_root)
+        return buf.getvalue()
+
+    def _log_files(self):
+        log_dir = self.tool_root / "data" / "logs"
+        if not log_dir.exists():
+            return []
+        return sorted(p for p in log_dir.iterdir() if p.is_file())
+
+    def test_real_run_writes_named_event_log(self):
+        (self.mod / "part.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+
+        self._run(dry_run=False)
+
+        logs = self._log_files()
+        self.assertEqual(len(logs), 1)
+        self.assertRegex(logs[0].name, r"^run_\d{8}_\d{6}\.log$")
+        text = logs[0].read_text(encoding="utf-8")
+        self.assertFalse(text.lstrip().startswith("{"))
+        self.assertIn("BACKUP_CREATED", text)
+        self.assertIn("FILE_REWRITE_SUCCESS", text)
+        self.assertIn("RUN_FINISHED", text)
+        self.assertIn("RUN_START", text)
+        self.assertIn("INFO", text)
+
+    def test_dry_run_prints_events_and_writes_no_log(self):
+        (self.mod / "part.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+
+        out = self._run(dry_run=True)
+
+        self.assertIn("RUN_START", out)
+        self.assertIn("RUN_FINISHED", out)
+        self.assertEqual(self._log_files(), [])
+        self.assertFalse((self.tool_root / "data").exists())
+
+    def test_same_second_log_name_uses_numeric_suffix(self):
+        (self.mod / "part.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+        log_dir = self.tool_root / "data" / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run_20260917_123045.log").write_text("taken\n", encoding="utf-8")
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 9, 17, 12, 30, 45)
+
+        with patch("localizer.datetime", FrozenDateTime):
+            self._run(dry_run=False)
+
+        names = {p.name for p in self._log_files()}
+        self.assertIn("run_20260917_123045.log", names)
+        self.assertIn("run_20260917_123045_2.log", names)
+        second = log_dir / "run_20260917_123045_2.log"
+        self.assertIn("RUN_START", second.read_text(encoding="utf-8"))
+        self.assertEqual((log_dir / "run_20260917_123045.log").read_text(encoding="utf-8"), "taken\n")
+
+    def test_bad_utf8_emits_scan_file_failed_and_continues(self):
+        (self.mod / "bad.cfg").write_bytes(
+            b"PART\n{\n    name = badEngine\n    title = Bad Engine\n    // \xff\n}\n"
+        )
+        (self.mod / "ok.cfg").write_text(
+            """
+PART
+{
+    name = okEngine
+    title = Ok Engine
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._run(dry_run=False)
+        log = self._log_files()[0].read_text(encoding="utf-8")
+
+        self.assertIn("SCAN_FILE_FAILED", out)
+        self.assertIn("SCAN_FILE_FAILED", log)
+        self.assertNotIn("SCAN_FILE path=bad.cfg", log)
+        self.assertIn("Failures:", out)
+        self.assertIn("Failures:", log)
+        self.assertIn("bad.cfg", out)
+        self.assertIn("FILE_REWRITE_SUCCESS", log)
+        self.assertIn("title = #LOC_MYMOD_okEngine_title", (self.mod / "ok.cfg").read_text(encoding="utf-8"))
+        self.assertEqual(
+            (self.mod / "bad.cfg").read_bytes(),
+            b"PART\n{\n    name = badEngine\n    title = Bad Engine\n    // \xff\n}\n",
+        )
+
+    def test_rewrite_failure_emits_event_and_prints_failure_list(self):
+        (self.mod / "locked.cfg").write_text(
+            """
+PART
+{
+    name = lockedEngine
+    title = Locked Engine
+}
+""",
+            encoding="utf-8",
+        )
+        (self.mod / "ok.cfg").write_text(
+            """
+PART
+{
+    name = okEngine
+    title = Ok Engine
+}
+""",
+            encoding="utf-8",
+        )
+        locked_before = (self.mod / "locked.cfg").read_bytes()
+        real_replace = os.replace
+
+        def boom(src, dst):
+            if Path(dst).name == "locked.cfg":
+                raise OSError("simulated replace failure")
+            return real_replace(src, dst)
+
+        with patch("localizer.os.replace", side_effect=boom):
+            out = self._run(dry_run=False)
+
+        log = self._log_files()[0].read_text(encoding="utf-8")
+        self.assertIn("FILE_REWRITE_FAILED", log)
+        self.assertIn("FILE_REWRITE_FAILED", out)
+        self.assertIn("Failures:", out)
+        self.assertIn("Failures:", log)
+        self.assertIn("locked.cfg", out)
+        self.assertIn("locked.cfg", log)
+        self.assertEqual((self.mod / "locked.cfg").read_bytes(), locked_before)
+        self.assertIn("title = #LOC_MYMOD_okEngine_title", (self.mod / "ok.cfg").read_text(encoding="utf-8"))
+
+    def test_skipped_fields_emit_field_skipped(self):
+        (self.mod / "part.cfg").write_text(
+            """
+PART
+{
+    name = mixed
+    title = #LOC_OLD_mixed_title
+    description =
+    manufacturer = Super Co
+    tags = leftover
+}
+""",
+            encoding="utf-8",
+        )
+
+        out = self._run(dry_run=True)
+        self.assertIn("FIELD_SKIPPED", out)
+        self.assertIn("FIELD_FOUND", out)
+
+    def test_second_run_emits_backup_exists(self):
+        (self.mod / "part.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+        self._run(dry_run=False)
+        (self.mod / "part.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+        out = self._run(dry_run=False)
+        log = self._log_files()[-1].read_text(encoding="utf-8")
+        self.assertIn("BACKUP_EXISTS", out)
+        self.assertIn("BACKUP_EXISTS", log)
+        self.assertNotIn("BACKUP_CREATED", log)
+
+    def test_duplicate_keys_emit_warning_event(self):
+        (self.mod / "twins.cfg").write_text(
+            """
+PART
+{
+    name = engine
+    title = First Copy
+}
+PART
+{
+    name = engine
+    title = Second Copy
+}
+""",
+            encoding="utf-8",
+        )
+        out = self._run(dry_run=True)
+        self.assertIn("LOC_KEY_DUPLICATE", out)
+        self.assertIn("WARNING", out)
+
+    def test_section_13_log_contains_required_events(self):
+        (self.mod / "engine.cfg").write_text(ACCEPTANCE_CFG, encoding="utf-8")
+        self._run(dry_run=False)
+        text = self._log_files()[0].read_text(encoding="utf-8")
+        for event in (
+            "RUN_START",
+            "SCAN_START",
+            "SCAN_FILE",
+            "PART_FOUND",
+            "FIELD_FOUND",
+            "LOC_KEY_CREATED",
+            "BACKUP_CREATED",
+            "FILE_REWRITE_START",
+            "FILE_REWRITE_SUCCESS",
+            "RUN_FINISHED",
+        ):
+            self.assertIn(event, text)
 
 
 if __name__ == "__main__":

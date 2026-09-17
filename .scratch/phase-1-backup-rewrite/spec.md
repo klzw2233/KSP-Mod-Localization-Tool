@@ -1,5 +1,5 @@
 ---
-Status: ready-for-agent
+Status: implemented
 Feature: phase-1-backup-rewrite
 ---
 

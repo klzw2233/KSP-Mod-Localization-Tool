@@ -49,7 +49,7 @@ def _iter_part_blocks(text):
         pos = i
 
 
-def _iter_first_level_fields(lines):
+def _iter_first_level_entries(lines):
     depth = 0
     for index, raw in enumerate(lines):
         line = raw.strip()
@@ -62,13 +62,20 @@ def _iter_first_level_fields(lines):
         key, value = map(str.strip, line.split("=", 1))
         if "//" in value:
             value = value.split("//", 1)[0].rstrip()
-        if key == "name":
-            yield index, key, value
-        elif (
-            key in LOCALIZABLE_FIELDS
-            and value
-            and not value.lstrip().startswith("#")
-        ):
+        yield index, key, value
+
+
+def _is_extractable(key, value):
+    return (
+        key in LOCALIZABLE_FIELDS
+        and value
+        and not value.lstrip().startswith("#")
+    )
+
+
+def _iter_first_level_fields(lines):
+    for index, key, value in _iter_first_level_entries(lines):
+        if key == "name" or _is_extractable(key, value):
             yield index, key, value
 
 
@@ -196,6 +203,27 @@ def _backup_if_needed(path, rel, backup_dir, mapping):
     return True
 
 
+def _log_path(tool_root):
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path(tool_root) / "data" / "logs"
+    candidate = log_dir / f"run_{stamp}.log"
+    n = 2
+    while candidate.exists():
+        candidate = log_dir / f"run_{stamp}_{n}.log"
+        n += 1
+    return candidate
+
+
+def _emit(log_file, level, event, extra=""):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} {level}  {event}"
+    if extra:
+        line += f" {extra}"
+    print(line)
+    if log_file is not None:
+        log_file.write(line + "\n")
+
+
 def _read_cfg(path):
     with open(path, "r", encoding="utf-8", newline="") as handle:
         return handle.read()
@@ -208,13 +236,14 @@ def _rewrite_cfg(path, new_text):
     os.replace(tmp, path)
 
 
-def _rewrite_mod(mod, parts, tool_root):
+def _rewrite_mod(mod, parts, tool_root, log_file=None):
     by_source = defaultdict(list)
     for part in parts:
         by_source[part.source].append(part)
     root = Path(mod)
     backup_dir = _backup_dir(tool_root, mod)
     mapping = _load_mapping(backup_dir, mod)
+    failures = []
     for rel, file_parts in by_source.items():
         if not any(part.keys for part in file_parts):
             continue
@@ -224,34 +253,55 @@ def _rewrite_mod(mod, parts, tool_root):
             new_text = _rewrite_text(text, file_parts)
             if new_text == text:
                 continue
+            _emit(log_file, "INFO", "FILE_REWRITE_START", f"path={rel}")
             if _backup_if_needed(path, rel, backup_dir, mapping):
                 _save_mapping(backup_dir, mapping)
+                _emit(log_file, "INFO", "BACKUP_CREATED", f"path={rel}")
+            else:
+                _emit(log_file, "INFO", "BACKUP_EXISTS", f"path={rel}")
             _rewrite_cfg(path, new_text)
+            _emit(log_file, "INFO", "FILE_REWRITE_SUCCESS", f"path={rel}")
         except (OSError, UnicodeError):
+            _emit(log_file, "ERROR", "FILE_REWRITE_FAILED", f"path={rel}")
+            failures.append(rel)
             continue
+    return failures
 
 
-def scan_mod(mod_dir):
+def scan_mod(mod_dir, log_file=None):
     parts = []
+    failures = []
     root = Path(mod_dir)
+    _emit(log_file, "INFO", "SCAN_START", f"path={root}")
 
     for cfg in root.rglob("*.cfg"):
-
-        try:
-            text = cfg.read_text(
-                encoding="utf-8",
-                errors="ignore"
-            )
-        except:
-            continue
-
-        found = parse_parts(text)
         rel = cfg.relative_to(root).as_posix()
-        for part in found:
+        try:
+            text = _read_cfg(cfg)
+        except (OSError, UnicodeError):
+            _emit(log_file, "ERROR", "SCAN_FILE_FAILED", f"path={rel}")
+            failures.append(rel)
+            continue
+        _emit(log_file, "INFO", "SCAN_FILE", f"path={rel}")
+
+        found = []
+        for _, _, block in _iter_part_blocks(text):
+            part = extract_part(block)
+            if not part:
+                continue
             part.source = rel
+            _emit(log_file, "INFO", "PART_FOUND", f"name={part.name}")
+            for _, key, value in _iter_first_level_entries(block.splitlines()):
+                if key not in LOCALIZABLE_FIELDS:
+                    continue
+                if _is_extractable(key, value):
+                    _emit(log_file, "INFO", "FIELD_FOUND", f"field={key} value={value}")
+                else:
+                    _emit(log_file, "INFO", "FIELD_SKIPPED", f"field={key}")
+            found.append(part)
         parts.extend(found)
 
-    return parts
+    return parts, failures
 
 
 def build_loc_key(prefix, part_name, field, suffix=""):
@@ -265,8 +315,8 @@ def _sanitize_rel(rel):
     return re.sub(r"[^A-Za-z0-9._-]", "_", rel[:-4])
 
 
-def _assign_keys(parts, prefix):
-    """Fill part.keys. Fallback keys emit LOC_KEY_DUPLICATE on stdout."""
+def _assign_keys(parts, prefix, log_file=None):
+    """Fill part.keys. Fallback keys emit LOC_KEY_DUPLICATE."""
     by_name_field = defaultdict(list)
     for index, part in enumerate(parts):
         for field in part.fields:
@@ -287,8 +337,9 @@ def _assign_keys(parts, prefix):
                 suffix = f"{suffix}__{n}" if suffix else str(n)
             key = build_loc_key(prefix, name, field, suffix)
             part.keys[field] = key
+            _emit(log_file, "INFO", "LOC_KEY_CREATED", key)
             if suffix:
-                print(f"WARNING LOC_KEY_DUPLICATE {key}")
+                _emit(log_file, "WARNING", "LOC_KEY_DUPLICATE", key)
 
 
 def write_localization(parts, out_dir):
@@ -391,28 +442,47 @@ def run(mod, prefix, dry_run=False, tool_root=None):
     if tool_root is None:
         tool_root = Path(__file__).resolve().parent
 
-    parts = scan_mod(mod)
-    _assign_keys(parts, prefix)
+    log_file = None
+    if not dry_run:
+        path = _log_path(tool_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(path, "w", encoding="utf-8")
 
-    print(f"Found {len(parts)} PARTs")
+    try:
+        _emit(log_file, "INFO", "RUN_START")
+        parts, failures = scan_mod(mod, log_file)
+        _assign_keys(parts, prefix, log_file)
 
-    keys = []
-    for part in parts:
-        for field in part.fields:
-            keys.append(part.keys[field])
-    if keys:
-        print("Keys:")
-        for key in keys:
-            print(key)
+        print(f"Found {len(parts)} PARTs")
 
-    if dry_run:
-        return
+        keys = []
+        for part in parts:
+            for field in part.fields:
+                keys.append(part.keys[field])
+        if keys:
+            print("Keys:")
+            for key in keys:
+                print(key)
 
-    _rewrite_mod(mod, parts, tool_root)
+        if not dry_run:
+            failures.extend(_rewrite_mod(mod, parts, tool_root, log_file))
+            loc_dir = Path(mod) / "Localization"
+            write_localization(parts, loc_dir)
+            print(f"Generated: {loc_dir}")
 
-    loc_dir = Path(mod) / "Localization"
-    write_localization(parts, loc_dir)
-    print(f"Generated: {loc_dir}")
+        if failures:
+            print("Failures:")
+            if log_file is not None:
+                log_file.write("Failures:\n")
+            for rel in failures:
+                print(rel)
+                if log_file is not None:
+                    log_file.write(rel + "\n")
+
+        _emit(log_file, "INFO", "RUN_FINISHED")
+    finally:
+        if log_file is not None:
+            log_file.close()
 
 
 def main(argv=None):
