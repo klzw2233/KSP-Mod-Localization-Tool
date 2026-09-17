@@ -2,7 +2,7 @@
 
 扫描 Kerbal Space Program（KSP1）Mod 的 `.cfg`，提取 `PART` 第一层显示字段，生成 Localization 文件。目标是安全、可回滚、可预览地改写原 CFG，而不是随便批量替换字符串。
 
-当前还在 Phase 1：扫描 + 稳定 key + dry-run。**不会改原始 CFG。** 备份、rewrite、日志是后续票。
+当前还在 Phase 1：扫描 + 稳定 key + dry-run + 备份 + 只改 value 的 rewrite。日志是下一张票。
 
 ## 现在能做什么
 
@@ -26,7 +26,16 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 <mod>/Localization/translation.csv    # utf-8-sig，表头 key,en-us,zh-cn
 ```
 
-`--dry-run` 不写这三份，不改原 CFG，不创建 `data/`。
+正式跑还会把有改动的 CFG 备份到工具目录（不是 Mod 旁的 `.bak`），再只替换目标字段的 value：
+
+```text
+<tool>/data/backups/<mod_id>/files/<相对路径>
+<tool>/data/backups/<mod_id>/mapping.json
+```
+
+`mod_id` 是 `sha256(normcase(resolve(--mod)))` 的十六进制前 12 位。mapping 里已有的相对路径不会被覆盖。无改动的文件不备份、不写 tmp。
+
+`--dry-run` 不写 Localization、不改原 CFG、不备份、不创建 `data/`。
 
 ## 扫描规则
 
@@ -66,9 +75,7 @@ python -m unittest discover -s tests
 
 ## 还没做（Phase 1 剩余）
 
-- 备份到工具 `data/backups/`（不是 Mod 旁的 `.bak`）
-- 改写原 CFG 的字段 value
-- 文本运行日志
+- 文本运行日志（ticket 05）
 - AI 翻译（不在 Phase 1）
 
 交接细节见 [`HANDOFF.md`](HANDOFF.md)。

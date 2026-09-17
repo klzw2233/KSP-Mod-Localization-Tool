@@ -1,4 +1,7 @@
+import hashlib
 import io
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -100,8 +103,6 @@ class RunAndDryRunTests(unittest.TestCase):
         en = (loc / "en-us.cfg").read_text(encoding="utf-8")
         self.assertIn("#LOC_MYMOD_testEngine_title", en)
         self.assertIn("Test Engine", en)
-        original = (self.mod / "part.cfg").read_text(encoding="utf-8")
-        self.assertIn("title = Test Engine", original)
 
     def _dry_run(self):
         buf = io.StringIO()
@@ -366,6 +367,351 @@ PART
         en = (self.mod / "Localization" / "en-us.cfg").read_text(encoding="utf-8")
         self.assertIn("#LOC_BDB_engine_title = Title Only", en)
         self.assertIn("#LOC_BDB_engine_description = Description Only", en)
+
+
+ACCEPTANCE_CFG = """
+PART
+{
+    name = testEngine
+
+    title = Test Engine
+    manufacturer = Test Company
+    description = Very powerful engine.
+    tags = engine rocket
+
+    MODULE
+    {
+        name = TestModule
+        title = Internal Module Name
+    }
+}
+"""
+
+
+class BackupAndRewriteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.mod = self.root / "mod"
+        self.mod.mkdir()
+        self.tool_root = self.root / "tool"
+        self.tool_root.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, dry_run=False):
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            run(str(self.mod), "MYMOD", dry_run=dry_run, tool_root=self.tool_root)
+        return buf.getvalue()
+
+    def test_real_run_rewrites_safe_field_values_only(self):
+        cfg = self.mod / "part.cfg"
+        cfg.write_text(ACCEPTANCE_CFG, encoding="utf-8")
+
+        self._run(dry_run=False)
+
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("title = #LOC_MYMOD_testEngine_title", text)
+        self.assertIn("manufacturer = #LOC_MYMOD_testEngine_manufacturer", text)
+        self.assertIn("description = #LOC_MYMOD_testEngine_description", text)
+        self.assertIn("tags = #LOC_MYMOD_testEngine_tags", text)
+        self.assertIn("title = Internal Module Name", text)
+        self.assertIn("name = testEngine", text)
+        self.assertIn("name = TestModule", text)
+
+    def _mod_id(self):
+        return hashlib.sha256(
+            os.path.normcase(str(self.mod.resolve())).encode("utf-8")
+        ).hexdigest()[:12]
+
+    def _backup_root(self):
+        return self.tool_root / "data" / "backups" / self._mod_id()
+
+    def test_first_rewrite_backs_up_original_bytes_under_tool_data(self):
+        cfg = self.mod / "part.cfg"
+        original = ACCEPTANCE_CFG.encode("utf-8")
+        cfg.write_bytes(original)
+
+        self._run(dry_run=False)
+
+        backup_root = self._backup_root()
+        backup_file = backup_root / "files" / "part.cfg"
+        mapping_path = backup_root / "mapping.json"
+
+        self.assertTrue(backup_file.is_file())
+        self.assertEqual(backup_file.read_bytes(), original)
+        self.assertFalse((self.mod / "part.cfg.bak").exists())
+
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        self.assertEqual(mapping["mod_root"], str(self.mod.resolve()))
+        entry = mapping["files"]["part.cfg"]
+        self.assertEqual(entry["original"], str(cfg.resolve()))
+        self.assertEqual(entry["backup"], "files/part.cfg")
+        self.assertRegex(entry["created_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+    def test_second_run_does_not_overwrite_existing_backup(self):
+        cfg = self.mod / "part.cfg"
+        original = ACCEPTANCE_CFG.encode("utf-8")
+        cfg.write_bytes(original)
+
+        self._run(dry_run=False)
+        backup = self._backup_root() / "files" / "part.cfg"
+        first_bytes = backup.read_bytes()
+        first_mtime = backup.stat().st_mtime
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        created_at = mapping["files"]["part.cfg"]["created_at"]
+
+        cfg.write_bytes(original)
+        self._run(dry_run=False)
+
+        self.assertEqual(backup.read_bytes(), first_bytes)
+        self.assertEqual(backup.read_bytes(), original)
+        self.assertEqual(backup.stat().st_mtime, first_mtime)
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        self.assertEqual(mapping["files"]["part.cfg"]["created_at"], created_at)
+        self.assertIn("title = #LOC_MYMOD_testEngine_title", cfg.read_text(encoding="utf-8"))
+
+    def test_later_run_appends_newly_seen_files_to_mapping(self):
+        first = self.mod / "first.cfg"
+        first.write_text(
+            """
+PART
+{
+    name = firstEngine
+    title = First Engine
+}
+""",
+            encoding="utf-8",
+        )
+        self._run(dry_run=False)
+
+        second = self.mod / "second.cfg"
+        second_bytes = b"""
+PART
+{
+    name = secondEngine
+    title = Second Engine
+}
+"""
+        second.write_bytes(second_bytes)
+        self._run(dry_run=False)
+
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        self.assertIn("first.cfg", mapping["files"])
+        self.assertIn("second.cfg", mapping["files"])
+        self.assertEqual(
+            (self._backup_root() / "files" / "second.cfg").read_bytes(),
+            second_bytes,
+        )
+        self.assertIn("title = #LOC_MYMOD_secondEngine_title", second.read_text(encoding="utf-8"))
+
+    def test_trailing_comment_indent_and_other_fields_survive_rewrite(self):
+        cfg = self.mod / "part.cfg"
+        cfg.write_text(
+            """
+PART
+{
+    name = commentedEngine
+    // keep this whole-line comment
+
+    title = Super Engine // shown in VAB
+    mass = 1.25
+    manufacturer = Test Company
+    description = Very powerful engine.
+    tags = engine rocket
+}
+""",
+            encoding="utf-8",
+        )
+
+        self._run(dry_run=False)
+
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("    title = #LOC_MYMOD_commentedEngine_title // shown in VAB", text)
+        self.assertIn("    // keep this whole-line comment", text)
+        self.assertIn("    mass = 1.25", text)
+        self.assertIn("    name = commentedEngine", text)
+        self.assertIn("\n\n    title =", text)
+
+    def test_unchanged_file_is_not_backed_up_or_rewritten(self):
+        hashed = self.mod / "already.cfg"
+        hashed_text = """
+PART
+{
+    name = alreadyLocalized
+    title = #LOC_OLD_alreadyLocalized_title
+    description = #autoLOC_12345
+}
+"""
+        hashed.write_text(hashed_text, encoding="utf-8")
+        before = hashed.read_bytes()
+
+        self._run(dry_run=False)
+
+        self.assertEqual(hashed.read_bytes(), before)
+        self.assertFalse((self._backup_root() / "files" / "already.cfg").exists())
+        mapping_path = self._backup_root() / "mapping.json"
+        if mapping_path.exists():
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+            self.assertNotIn("already.cfg", mapping.get("files", {}))
+
+    def test_crlf_file_keeps_crlf_after_rewrite(self):
+        cfg = self.mod / "crlf.cfg"
+        cfg.write_bytes(
+            b"PART\r\n{\r\n    name = crlfEngine\r\n    title = CRLF Engine\r\n}\r\n"
+        )
+
+        self._run(dry_run=False)
+
+        data = cfg.read_bytes()
+        self.assertIn(b"title = #LOC_MYMOD_crlfEngine_title", data)
+        self.assertIn(b"\r\n", data)
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+
+    def test_dry_run_does_not_backup_or_rewrite(self):
+        cfg = self.mod / "part.cfg"
+        cfg.write_text(ACCEPTANCE_CFG, encoding="utf-8")
+        before = cfg.read_bytes()
+
+        self._run(dry_run=True)
+
+        self.assertEqual(cfg.read_bytes(), before)
+        self.assertFalse((self.tool_root / "data").exists())
+        self.assertFalse((self.mod / "Localization").exists())
+        self.assertFalse(list(self.mod.rglob("*.tmp")))
+        self.assertFalse(list(self.mod.rglob("*.bak")))
+
+    def test_chinese_relative_path_is_backed_up_and_rewritten(self):
+        folder = self.mod / "零件"
+        folder.mkdir()
+        cfg = folder / "引擎.cfg"
+        original = (
+            "PART\n{\n    name = chineseEngine\n    title = Chinese Engine\n}\n"
+        ).encode("utf-8")
+        cfg.write_bytes(original)
+
+        self._run(dry_run=False)
+
+        self.assertIn(
+            "title = #LOC_MYMOD_chineseEngine_title",
+            cfg.read_text(encoding="utf-8"),
+        )
+        backup = self._backup_root() / "files" / "零件" / "引擎.cfg"
+        self.assertTrue(backup.is_file())
+        self.assertEqual(backup.read_bytes(), original)
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        self.assertIn("零件/引擎.cfg", mapping["files"])
+        self.assertEqual(mapping["files"]["零件/引擎.cfg"]["backup"], "files/零件/引擎.cfg")
+
+    def test_rewrite_failure_leaves_original_and_continues(self):
+        locked = self.mod / "locked.cfg"
+        locked.write_text(
+            """
+PART
+{
+    name = lockedEngine
+    title = Locked Engine
+}
+""",
+            encoding="utf-8",
+        )
+        ok = self.mod / "ok.cfg"
+        ok.write_text(
+            """
+PART
+{
+    name = okEngine
+    title = Ok Engine
+}
+""",
+            encoding="utf-8",
+        )
+        locked_before = locked.read_bytes()
+
+        real_replace = os.replace
+
+        def boom(src, dst):
+            if Path(dst).name == "locked.cfg":
+                raise OSError("simulated replace failure")
+            return real_replace(src, dst)
+
+        with patch("localizer.os.replace", side_effect=boom):
+            self._run(dry_run=False)
+
+        self.assertEqual(locked.read_bytes(), locked_before)
+        self.assertIn("title = #LOC_MYMOD_okEngine_title", ok.read_text(encoding="utf-8"))
+        self.assertTrue((self._backup_root() / "files" / "ok.cfg").is_file())
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        self.assertIn("locked.cfg", mapping["files"])
+        self.assertEqual(
+            (self._backup_root() / "files" / "locked.cfg").read_bytes(),
+            locked_before,
+        )
+        self.assertTrue((self.mod / "locked.cfg.tmp").exists())
+
+    def test_bad_bytes_file_does_not_abort_other_rewrites(self):
+        bad = self.mod / "bad.cfg"
+        bad.write_bytes(
+            b"PART\n{\n    name = badEngine\n    title = Bad Engine\n    // \xff\n}\n"
+        )
+        ok = self.mod / "ok.cfg"
+        ok.write_text(
+            """
+PART
+{
+    name = okEngine
+    title = Ok Engine
+}
+""",
+            encoding="utf-8",
+        )
+        bad_before = bad.read_bytes()
+
+        self._run(dry_run=False)
+
+        self.assertEqual(bad.read_bytes(), bad_before)
+        self.assertIn("title = #LOC_MYMOD_okEngine_title", ok.read_text(encoding="utf-8"))
+        mapping_path = self._backup_root() / "mapping.json"
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        self.assertNotIn("bad.cfg", mapping["files"])
+        self.assertIn("ok.cfg", mapping["files"])
+
+    def test_section_13_acceptance_minus_log_file(self):
+        cfg = self.mod / "engine.cfg"
+        cfg.write_text(ACCEPTANCE_CFG, encoding="utf-8")
+
+        self._run(dry_run=False)
+
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("title = #LOC_MYMOD_testEngine_title", text)
+        self.assertIn("manufacturer = #LOC_MYMOD_testEngine_manufacturer", text)
+        self.assertIn("description = #LOC_MYMOD_testEngine_description", text)
+        self.assertIn("tags = #LOC_MYMOD_testEngine_tags", text)
+        self.assertIn("title = Internal Module Name", text)
+        self.assertFalse((self.mod / "engine.cfg.bak").exists())
+
+        loc = self.mod / "Localization"
+        en = (loc / "en-us.cfg").read_text(encoding="utf-8")
+        zh = (loc / "zh-cn.cfg").read_text(encoding="utf-8")
+        csv_text = (loc / "translation.csv").read_text(encoding="utf-8-sig")
+        for key in (
+            "#LOC_MYMOD_testEngine_title",
+            "#LOC_MYMOD_testEngine_manufacturer",
+            "#LOC_MYMOD_testEngine_description",
+            "#LOC_MYMOD_testEngine_tags",
+        ):
+            self.assertIn(key, text)
+            self.assertIn(key, en)
+            self.assertIn(key, zh)
+            self.assertIn(key, csv_text)
+        self.assertIn("Test Engine", en)
+        self.assertIn("Test Engine", zh)
+
+        mapping = json.loads((self._backup_root() / "mapping.json").read_text(encoding="utf-8"))
+        self.assertIn("engine.cfg", mapping["files"])
+        self.assertTrue((self._backup_root() / "files" / "engine.cfg").is_file())
 
 
 if __name__ == "__main__":

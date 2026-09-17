@@ -2,8 +2,13 @@
 
 import argparse
 import csv
+import hashlib
+import json
+import os
 import re
+import shutil
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 LOCALIZABLE_FIELDS = [
@@ -22,44 +27,61 @@ class PartInfo:
         self.keys = {}
 
 
-def parse_parts(text):
-    """
-    提取 PART 块
-    """
-
-    parts = []
-
+def _iter_part_blocks(text):
     pos = 0
-
     while True:
         part_match = re.search(r"\bPART\b", text[pos:])
         if not part_match:
             break
-
         start = pos + part_match.start()
-
         brace_start = text.find("{", start)
         if brace_start == -1:
             break
-
         depth = 1
         i = brace_start + 1
-
         while i < len(text) and depth > 0:
             if text[i] == "{":
                 depth += 1
             elif text[i] == "}":
                 depth -= 1
             i += 1
+        yield brace_start, i, text[brace_start:i]
+        pos = i
 
-        block = text[brace_start:i]
 
+def _iter_first_level_fields(lines):
+    depth = 0
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        if not line or line.startswith("//"):
+            continue
+        depth += line.count("{")
+        depth -= line.count("}")
+        if depth != 1 or "=" not in line:
+            continue
+        key, value = map(str.strip, line.split("=", 1))
+        if "//" in value:
+            value = value.split("//", 1)[0].rstrip()
+        if key == "name":
+            yield index, key, value
+        elif (
+            key in LOCALIZABLE_FIELDS
+            and value
+            and not value.lstrip().startswith("#")
+        ):
+            yield index, key, value
+
+
+def parse_parts(text):
+    """
+    提取 PART 块
+    """
+
+    parts = []
+    for _, _, block in _iter_part_blocks(text):
         part = extract_part(block)
         if part:
             parts.append(part)
-
-        pos = i
-
     return parts
 
 
@@ -68,37 +90,12 @@ def extract_part(block):
     只读取 PART 第一层字段
     """
 
-    lines = block.splitlines()
-
-    depth = 0
-
     part_name = None
     fields = {}
-
-    for raw in lines:
-
-        line = raw.strip()
-
-        if not line or line.startswith("//"):
-            continue
-
-        depth += line.count("{")
-        depth -= line.count("}")
-
-        if depth != 1:
-            continue
-
-        if "=" not in line:
-            continue
-
-        key, value = map(str.strip, line.split("=", 1))
-        if "//" in value:
-            value = value.split("//", 1)[0].rstrip()
-
+    for _, key, value in _iter_first_level_fields(block.splitlines()):
         if key == "name":
             part_name = value
-
-        if key in LOCALIZABLE_FIELDS and value and not value.lstrip().startswith("#"):
+        elif key in LOCALIZABLE_FIELDS:
             fields[key] = value
 
     if not part_name:
@@ -106,8 +103,132 @@ def extract_part(block):
 
     part = PartInfo(part_name)
     part.fields = fields
-
     return part
+
+
+def _replace_value(raw, new_value):
+    if raw.endswith("\r\n"):
+        body, ending = raw[:-2], "\r\n"
+    elif raw.endswith("\n"):
+        body, ending = raw[:-1], "\n"
+    elif raw.endswith("\r"):
+        body, ending = raw[:-1], "\r"
+    else:
+        body, ending = raw, ""
+    eq = body.find("=")
+    after = body[eq + 1 :]
+    comment = ""
+    split_at = after.find("//")
+    if split_at != -1:
+        comment = after[split_at:]
+        after = after[:split_at]
+    stripped = after.strip()
+    if not stripped:
+        return raw
+    start = after.find(stripped)
+    lead = after[:start]
+    trail = after[start + len(stripped) :]
+    return body[: eq + 1] + lead + new_value + trail + comment + ending
+
+
+def _rewrite_block(block, part):
+    if not part.keys:
+        return block
+    lines = block.splitlines(keepends=True)
+    for index, key, _value in _iter_first_level_fields(lines):
+        if key in part.keys:
+            lines[index] = _replace_value(lines[index], part.keys[key])
+    return "".join(lines)
+
+
+def _rewrite_text(text, file_parts):
+    out = []
+    last = 0
+    part_iter = iter(file_parts)
+    for start, end, block in _iter_part_blocks(text):
+        extracted = extract_part(block)
+        if not extracted:
+            continue
+        part = next(part_iter)
+        out.append(text[last:start])
+        out.append(_rewrite_block(block, part))
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _mod_id(mod):
+    return hashlib.sha256(
+        os.path.normcase(str(Path(mod).resolve())).encode("utf-8")
+    ).hexdigest()[:12]
+
+
+def _backup_dir(tool_root, mod):
+    return Path(tool_root) / "data" / "backups" / _mod_id(mod)
+
+
+def _load_mapping(backup_dir, mod):
+    path = backup_dir / "mapping.json"
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {"mod_root": str(Path(mod).resolve()), "files": {}}
+
+
+def _save_mapping(backup_dir, mapping):
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    (backup_dir / "mapping.json").write_text(
+        json.dumps(mapping, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _backup_if_needed(path, rel, backup_dir, mapping):
+    if rel in mapping["files"]:
+        return False
+    dest = backup_dir / "files" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, dest)
+    mapping["files"][rel] = {
+        "original": str(Path(path).resolve()),
+        "backup": Path("files", rel).as_posix(),
+        "created_at": datetime.now().replace(microsecond=0).isoformat(),
+    }
+    return True
+
+
+def _read_cfg(path):
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def _rewrite_cfg(path, new_text):
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as handle:
+        handle.write(new_text)
+    os.replace(tmp, path)
+
+
+def _rewrite_mod(mod, parts, tool_root):
+    by_source = defaultdict(list)
+    for part in parts:
+        by_source[part.source].append(part)
+    root = Path(mod)
+    backup_dir = _backup_dir(tool_root, mod)
+    mapping = _load_mapping(backup_dir, mod)
+    for rel, file_parts in by_source.items():
+        if not any(part.keys for part in file_parts):
+            continue
+        path = root / rel
+        try:
+            text = _read_cfg(path)
+            new_text = _rewrite_text(text, file_parts)
+            if new_text == text:
+                continue
+            if _backup_if_needed(path, rel, backup_dir, mapping):
+                _save_mapping(backup_dir, mapping)
+            _rewrite_cfg(path, new_text)
+        except (OSError, UnicodeError):
+            continue
 
 
 def scan_mod(mod_dir):
@@ -267,7 +388,6 @@ def parse_args(argv=None):
 
 
 def run(mod, prefix, dry_run=False, tool_root=None):
-    # ponytail: unused until ticket 04/05 backup+logs; keep so tests can inject it
     if tool_root is None:
         tool_root = Path(__file__).resolve().parent
 
@@ -287,6 +407,8 @@ def run(mod, prefix, dry_run=False, tool_root=None):
 
     if dry_run:
         return
+
+    _rewrite_mod(mod, parts, tool_root)
 
     loc_dir = Path(mod) / "Localization"
     write_localization(parts, loc_dir)
