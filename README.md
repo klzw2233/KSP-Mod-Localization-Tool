@@ -14,7 +14,7 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 |---|---|---|
 | `--mod` | 是 | Mod 根目录 |
 | `--prefix` | 是 | LOC key 前缀，例如 `WBI` |
-| `--dry-run` | 否 | 只打印将生成的 key，零写入 |
+| `--dry-run` | 否 | 预览事件和将生成的 key，零写入 |
 
 缺 `--mod` 或 `--prefix` 会打印用法并以非零退出。没有交互式 `input()`。
 
@@ -63,7 +63,7 @@ python localizer.py --mod <Mod目录> --prefix <PREFIX> [--dry-run]
 
 ## 测试
 
-无第三方依赖。stdlib `unittest`：
+无第三方依赖。stdlib `unittest`（41 tests）：
 
 ```text
 python -m unittest discover -s tests
@@ -75,14 +75,15 @@ python -m unittest discover -s tests
 |---|---|
 | `localizer.py` | 全部产品代码（单文件，不拆包） |
 | `tests/` | 测试 |
-| `docs/phase-1-spec.md` | Phase 1 实现合同，冲突时以它为准 |
-| `.scratch/phase-1-backup-rewrite/` | 本阶段 spec + tickets |
-| `需求和设计文档.txt` | 上游愿景；与 Phase 1 冲突时 spec 赢 |
+| `docs/phase-1-spec.md` | Phase 1 锁定合同（已实现） |
+| `.scratch/phase-1-backup-rewrite/` | Phase 1 spec + tickets（全部 resolved） |
+| `需求和设计文档.txt` | 上游愿景；与已实现行为冲突时以代码和 Phase 1 合同为准 |
 
 不要提交 `data/`、`测试文件夹/`、`.cfg.tmp`。
 
 ## 还没做
 
-- AI 翻译（不在 Phase 1）
+- OpenAI Compatible API 填写 `zh-cn.cfg`（下一阶段，先讨论再写 spec，未锁定前不要实现）
+- translation cache / glossary / manifest / `--restore` / 拆包
 
 交接细节见 [`HANDOFF.md`](HANDOFF.md)。

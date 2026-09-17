@@ -1,11 +1,11 @@
 # Phase 1 规格：Backup + Rewrite + Logging + Dry-run
 
-本文是 grill 后锁定的实现合同。实现以本文为准。
+**状态：已实现**（`main` @ `3a15ac9`，2026-09-17）。本文是 Phase 1 的锁定合同，不是下一阶段任务。下一阶段（OpenAI Compatible 翻译 `zh-cn.cfg`）另开 spec。
 
 上游愿景见仓库根目录 `需求和设计文档.txt`。其中：
 
-- **§50 当前 Agent 任务** 定义本阶段范围
-- **§50 条款与现有代码冲突时，本文赢**
+- Phase 1 范围当时由 **§50** 定义；现已完成
+- 与长文档冲突时本文赢（备份在工具 `data/`，不是旁路 `.bak`）
 - §3 / §47 其余 Phase（AI、cache、glossary、manifest、node rules 等）不在本合同内
 
 第一版扫描语义保留：只处理 `PART` 第一层字段 `title` / `description` / `manufacturer` / `tags`，不提取 `MODULE` 内部字段。
@@ -313,7 +313,9 @@ python -m unittest discover -s tests
 
 ---
 
-## 12. 实现顺序
+## 12. 实现顺序（历史，已完成）
+
+tickets 01–05 按此顺序做完。不要再当待办：
 
 1. 把 `input()` 换成 argparse（`--mod` / `--prefix` / `--dry-run`）
 2. 抽出 PART 第一层字段迭代器；scan 复用它
@@ -363,3 +365,5 @@ PART
 - `data/logs/run_*.log` 存在，含 `BACKUP_CREATED` / `FILE_REWRITE_SUCCESS` / `RUN_FINISHED`
 
 dry-run 同一输入：stdout 能看到将进行的改动，磁盘上原 cfg、Localization、`data/` 均无新写入。
+
+实测：`测试文件夹/001KerbalActuators`（未跟踪）已按此合同跑通。`zh-cn.cfg` 本阶段仍是英文副本。

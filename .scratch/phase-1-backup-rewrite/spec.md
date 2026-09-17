@@ -113,8 +113,8 @@ Keep the single-file scanner. Replace the interactive prompt with `--mod` / `--p
 
 ## Further Notes
 
-- Implementation contract (authoritative for this phase): `docs/phase-1-spec.md`. This spec is the agent-facing restatement plus the agreed test seams.
+- Implementation contract (authoritative for this phase, **now implemented**): `docs/phase-1-spec.md`. This spec is the agent-facing restatement plus the agreed test seams.
 - Upstream vision: `需求和设计文档.txt`. Where it conflicts with Phase 1, `docs/phase-1-spec.md` wins.
 - Backup-beside-cfg (`.bak`) from the long design doc is deliberately rejected: backups live under the tool `data/` tree.
-- Suggested implementation order remains section 12 of `docs/phase-1-spec.md`: argparse → shared iterator → skip/encoding/`//` → keys → backup+mapping → rewrite → loc files + dry-run writes → logging → tests, running tests after each slice.
-- Branch when coding: `feat/phase-1-backup-rewrite` off `main`. Do not commit Phase 1 onto `main` directly.
+- Implementation order in section 12 of `docs/phase-1-spec.md` is historical; tickets 01–05 are resolved on `main`.
+- Next work is a new feature (OpenAI Compatible fill of `zh-cn.cfg`). Grill and write a new spec first. Do not implement from this file.
