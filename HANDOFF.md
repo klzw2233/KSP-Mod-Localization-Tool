@@ -4,7 +4,7 @@
 
 ## 现在停在哪
 
-- 分支：`feat/phase-1-logging-and-failure-continue`（ticket 05，未合 main）
+- 分支：`main`（Phase 1 tickets 01–05 已合入，`3a15ac9`）
 - Phase 1 合同：[`docs/phase-1-spec.md`](docs/phase-1-spec.md)（grill 锁定，实现以它为准）
 - Agent 向 restatement + seams：[`.scratch/phase-1-backup-rewrite/spec.md`](.scratch/phase-1-backup-rewrite/spec.md)
 - 上游愿景：[`需求和设计文档.txt`](需求和设计文档.txt)。**§3 / §47 其余 Phase 不要做。** 与 Phase 1 冲突时 spec 赢。备份进工具 `data/`，不要旁路 `.bak`。
@@ -46,7 +46,7 @@ CLI：`--mod` / `--prefix` 必填，`--dry-run` 零写入（含不创建/不改 
 
 ## 下一个要做
 
-Phase 1 tickets 全部 resolved。合 `main` 前先问。不要开始 AI / cache / glossary / `--restore`。
+Phase 1 tickets 全部 resolved，已合 `main`。不要开始 AI / cache / glossary / `--restore`。
 
 ## 实测样本
 
